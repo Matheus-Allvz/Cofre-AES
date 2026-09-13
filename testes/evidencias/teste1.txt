@@ -1,0 +1,15 @@
+=== Comando 1: POST /cofres/d2c125cb-b779-462e-890b-4501b585dac5/segredos (titulo A) ===
+$ curl -s -X POST http://127.0.0.1:8030/cofres/d2c125cb-b779-462e-890b-4501b585dac5/segredos -H 'Content-Type: application/json' -H 'X-Senha-Mestra: senha-mestra-teste-2026' -d '{"titulo":"Servico A","usuario":"admin","senha":"S3nh@-Compartilhada!"}'
+{"id":"10e8d34a-0dc5-4c96-8225-d2a00b297c84"}
+
+=== Comando 2: POST /cofres/d2c125cb-b779-462e-890b-4501b585dac5/segredos (titulo B, mesma senha) ===
+$ curl -s -X POST http://127.0.0.1:8030/cofres/d2c125cb-b779-462e-890b-4501b585dac5/segredos -H 'Content-Type: application/json' -H 'X-Senha-Mestra: senha-mestra-teste-2026' -d '{"titulo":"Servico B","usuario":"admin","senha":"S3nh@-Compartilhada!"}'
+{"id":"621b1681-b45b-4edb-9509-87d8c4f7a68f"}
+
+segredo A id: 10e8d34a-0dc5-4c96-8225-d2a00b297c84
+segredo B id: 621b1681-b45b-4edb-9509-87d8c4f7a68f
+
+=== Comando 3: consulta REST - select nonce,criptograma da tabela segredos filtrando pelo cofre ===
+$ curl -s 'https://frresqlkqjuumthybxkk.supabase.co/rest/v1/segredos?select=id,titulo,nonce,criptograma&cofre_id=eq.d2c125cb-b779-462e-890b-4501b585dac5' -H 'apikey: <KEY>' -H 'Authorization: Bearer <KEY>'
+[{"id":"10e8d34a-0dc5-4c96-8225-d2a00b297c84","titulo":"Servico A","nonce":"Etx0nvK7ONGR/Ok7","criptograma":"oOCXV94bTVanLNBDXphz3RVplls="}, 
+ {"id":"621b1681-b45b-4edb-9509-87d8c4f7a68f","titulo":"Servico B","nonce":"hMecghfucsrRI9Gx","criptograma":"9FWL6wutWVSIWoZR7KXElG5ia3M="}]

@@ -1,0 +1,16 @@
+=== Criptograma original do segredo 10e8d34a-0dc5-4c96-8225-d2a00b297c84 ===
+oOCXV94bTVanLNBDXphz3RVplls=
+
+=== Comando: PATCH via REST equivalente a 'update ... set criptograma = ... where id = ...' (troca do 1o caractere por X) ===
+$ curl -s -X PATCH 'https://frresqlkqjuumthybxkk.supabase.co/rest/v1/segredos?id=eq.10e8d34a-0dc5-4c96-8225-d2a00b297c84' -H 'apikey: <KEY>' -H 'Authorization: Bearer <KEY>' -H 'Content-Type: application/json' -H 'Prefer: return=representation' -d '{"criptograma":"XOCXV94bTVanLNBDXphz3RVplls="}'
+[{"id":"10e8d34a-0dc5-4c96-8225-d2a00b297c84","cofre_id":"d2c125cb-b779-462e-890b-4501b585dac5","titulo":"Servico A","usuario":"admin","url":null,"nonce":"Etx0nvK7ONGR/Ok7","criptograma":"XOCXV94bTVanLNBDXphz3RVplls=","etiqueta":"++Y/d6Ob6ddVu9cTymELGg==","criado_em":"2026-09-13T20:11:19.961427+00:00","atualizado_em":"2026-09-13T20:11:19.961427+00:00"}]
+
+=== Comando: GET /cofres/d2c125cb-b779-462e-890b-4501b585dac5/segredos/10e8d34a-0dc5-4c96-8225-d2a00b297c84 pela API, com a senha-mestra CORRETA ===
+$ curl -s -i -X GET http://127.0.0.1:8030/cofres/d2c125cb-b779-462e-890b-4501b585dac5/segredos/10e8d34a-0dc5-4c96-8225-d2a00b297c84 -H 'X-Senha-Mestra: senha-mestra-teste-2026'
+HTTP/1.1 500 Internal Server Error
+date: Sun, 13 Sep 2026 20:11:49 GMT
+server: uvicorn
+content-length: 32
+content-type: application/json
+
+{"detail":"registro adulterado"}
