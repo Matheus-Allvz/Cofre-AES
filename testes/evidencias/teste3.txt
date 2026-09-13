@@ -1,0 +1,5 @@
+=== Consulta REST equivalente a: select titulo, usuario, nonce, criptograma, etiqueta from public.segredos; ===
+(filtrada pelo cofre de teste, via REST do Supabase com a chave publishable)
+$ curl -s 'https://frresqlkqjuumthybxkk.supabase.co/rest/v1/segredos?select=titulo,usuario,nonce,criptograma,etiqueta&cofre_id=eq.d2c125cb-b779-462e-890b-4501b585dac5' -H 'apikey: <KEY>' -H 'Authorization: Bearer <KEY>'
+[{"titulo":"Servico A","usuario":"admin","nonce":"Etx0nvK7ONGR/Ok7","criptograma":"oOCXV94bTVanLNBDXphz3RVplls=","etiqueta":"++Y/d6Ob6ddVu9cTymELGg=="}, 
+ {"titulo":"Servico B","usuario":"admin","nonce":"hMecghfucsrRI9Gx","criptograma":"9FWL6wutWVSIWoZR7KXElG5ia3M=","etiqueta":"JngC7P3iNuGS3kLyEaJZ2A=="}]

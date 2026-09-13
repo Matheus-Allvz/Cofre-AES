@@ -1,0 +1,17 @@
+=== Segredo ORIGEM (621b1681-b45b-4edb-9509-87d8c4f7a68f) - campos a copiar ===
+[{"nonce":"hMecghfucsrRI9Gx","criptograma":"9FWL6wutWVSIWoZR7KXElG5ia3M=","etiqueta":"JngC7P3iNuGS3kLyEaJZ2A=="}]
+nonce=hMecghfucsrRI9Gx criptograma=9FWL6wutWVSIWoZR7KXElG5ia3M= etiqueta=JngC7P3iNuGS3kLyEaJZ2A==
+
+=== Comando: PATCH via REST - copia nonce/criptograma/etiqueta do segredo ORIGEM para o registro DESTINO (bff51f9d-d563-43a4-986f-741b712de8fc) ===
+$ curl -s -X PATCH 'https://frresqlkqjuumthybxkk.supabase.co/rest/v1/segredos?id=eq.bff51f9d-d563-43a4-986f-741b712de8fc' -H 'apikey: <KEY>' -H 'Authorization: Bearer <KEY>' -H 'Content-Type: application/json' -H 'Prefer: return=representation' -d '{"nonce":"hMecghfucsrRI9Gx","criptograma":"9FWL6wutWVSIWoZR7KXElG5ia3M=","etiqueta":"JngC7P3iNuGS3kLyEaJZ2A=="}'
+[{"id":"bff51f9d-d563-43a4-986f-741b712de8fc","cofre_id":"d2c125cb-b779-462e-890b-4501b585dac5","titulo":"Servico C - destino","usuario":"admin","url":null,"nonce":"hMecghfucsrRI9Gx","criptograma":"9FWL6wutWVSIWoZR7KXElG5ia3M=","etiqueta":"JngC7P3iNuGS3kLyEaJZ2A==","criado_em":"2026-09-13T20:12:03.414668+00:00","atualizado_em":"2026-09-13T20:12:03.414668+00:00"}]
+
+=== Comando: GET /cofres/d2c125cb-b779-462e-890b-4501b585dac5/segredos/bff51f9d-d563-43a4-986f-741b712de8fc (segredo de DESTINO) com a senha-mestra CORRETA ===
+$ curl -s -i -X GET http://127.0.0.1:8030/cofres/d2c125cb-b779-462e-890b-4501b585dac5/segredos/bff51f9d-d563-43a4-986f-741b712de8fc -H 'X-Senha-Mestra: senha-mestra-teste-2026'
+HTTP/1.1 500 Internal Server Error
+date: Sun, 13 Sep 2026 20:12:20 GMT
+server: uvicorn
+content-length: 32
+content-type: application/json
+
+{"detail":"registro adulterado"}

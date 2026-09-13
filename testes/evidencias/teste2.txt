@@ -1,0 +1,9 @@
+=== Comando: GET /cofres/d2c125cb-b779-462e-890b-4501b585dac5/segredos/10e8d34a-0dc5-4c96-8225-d2a00b297c84 com X-Senha-Mestra ERRADA ===
+$ curl -s -i -X GET http://127.0.0.1:8030/cofres/d2c125cb-b779-462e-890b-4501b585dac5/segredos/10e8d34a-0dc5-4c96-8225-d2a00b297c84 -H 'X-Senha-Mestra: senha-errada-qualquer'
+HTTP/1.1 401 Unauthorized
+date: Sun, 13 Sep 2026 20:11:25 GMT
+server: uvicorn
+content-length: 35
+content-type: application/json
+
+{"detail":"senha-mestra incorreta"}
