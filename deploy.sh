@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+cd "$(dirname "$0")"
+
 echo "==> Atualizando codigo (origin/main)..."
 git fetch origin main
 git reset --hard origin/main
