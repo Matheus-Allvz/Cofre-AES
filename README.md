@@ -4,6 +4,15 @@ API em FastAPI para guardar senhas de forma cifrada (AES-256-GCM), com chave
 derivada por cofre a partir de uma senha-mestra (PBKDF2-HMAC-SHA256) e
 persistência no Supabase.
 
+## Interface web (exemplo)
+
+Este repositório é só a API — a interface web é um projeto separado, fora do
+escopo do trabalho, que consome esta API pelas mesmas rotas documentadas
+abaixo:
+
+- Repositório: https://github.com/Matheus-Allvz/Cofre-AES-Frontend
+- Demo ao vivo: https://keep.matheus-alves.dev
+
 ## Equipe
 
 - Matheus Alves da Costa — Matheus-Allvz
