@@ -1,0 +1,23 @@
+# Antes de este workflow funcionar, cadastre em
+# Settings -> Secrets and variables -> Actions os secrets:
+#   CI_DEPLOY_SSH_HOST  (IP ou host da VPS)
+#   CI_DEPLOY_SSH_USER  (usuario deploy)
+#   CI_DEPLOY_SSH_KEY   (chave privada SSH correspondente)
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.CI_DEPLOY_SSH_HOST }}
+          username: ${{ secrets.CI_DEPLOY_SSH_USER }}
+          key: ${{ secrets.CI_DEPLOY_SSH_KEY }}
+          script: /home/deploy/cofre-aes/deploy.sh
