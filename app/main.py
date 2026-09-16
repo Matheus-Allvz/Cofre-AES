@@ -2,11 +2,19 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 
 from app import banco, cripto
 from app.modelos import NovoCofre, NovoSegredo
 
 app = FastAPI(title="Cofre de Senhas")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://cofre.matheus-alves.dev"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
+    allow_headers=["Content-Type", "X-Senha-Mestra"],
+)
 
 
 def _verificar_cofre(cofre_id: str, senha_mestra: str) -> bytes:
