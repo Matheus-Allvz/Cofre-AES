@@ -11,7 +11,7 @@ app = FastAPI(title="Cofre de Senhas")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://cofre.matheus-alves.dev"],
+    allow_origins=["https://keep.matheus-alves.dev"],
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["Content-Type", "X-Senha-Mestra"],
 )
