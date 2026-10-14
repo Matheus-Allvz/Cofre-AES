@@ -1,9 +1,13 @@
 import base64
+import secrets
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
 
 from app import config, db
+
+RAIZ = Path(__file__).resolve().parent.parent
 
 
 def test_saude(cliente):
@@ -82,7 +86,7 @@ def test_transacao_commit_e_rollback(banco):
 
 def test_config(monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "postgresql://x")
-    monkeypatch.setenv("COFRE_SEGREDO", base64.b64encode(bytes(32)).decode())
+    monkeypatch.setenv("COFRE_SEGREDO", base64.b64encode(secrets.token_bytes(32)).decode())
     monkeypatch.delenv("COOKIE_SECURE", raising=False)
     assert config.carregar().cookie_secure is True
     monkeypatch.setenv("COOKIE_SECURE", "false")
@@ -95,3 +99,21 @@ def test_config(monkeypatch):
     monkeypatch.delenv("COFRE_SEGREDO")
     with pytest.raises(RuntimeError):
         config.carregar()
+
+
+def test_config_recusa_segredo_fraco_com_cookie_secure(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x")
+    exemplo = next(
+        linha.split("=", 1)[1]
+        for linha in (RAIZ / ".env.exemplo").read_text(encoding="utf-8").splitlines()
+        if linha.startswith("COFRE_SEGREDO=")
+    )
+    fracos = [exemplo, base64.b64encode(bytes(32)).decode(), base64.b64encode(b"ab" * 16).decode()]
+    for fraco in fracos:
+        monkeypatch.setenv("COFRE_SEGREDO", fraco)
+        monkeypatch.setenv("COOKIE_SECURE", "true")
+        with pytest.raises(RuntimeError, match="fraco"):
+            config.carregar()
+        # Só em dev local sem HTTPS o segredo de exemplo passa.
+        monkeypatch.setenv("COOKIE_SECURE", "false")
+        assert config.carregar().cookie_secure is False
