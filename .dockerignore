@@ -1,6 +1,10 @@
 .env
 .venv/
-__pycache__/
-**/__pycache__/
 .git/
-testes/evidencias/
+tests/
+docs/
+.github/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+.coverage

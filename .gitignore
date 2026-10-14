@@ -1,4 +1,8 @@
 .venv/
 .env
 __pycache__/
-CHECKLIST.md
+.pytest_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+pr.md
