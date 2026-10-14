@@ -12,6 +12,17 @@ docker compose up -d --build --wait
 curl -fsS http://127.0.0.1:8098/api/saude    # {"status":"ok"}
 ```
 
+O `.env.exemplo` é para desenvolvimento local (`COOKIE_SECURE=false`). Com
+`COOKIE_SECURE=true` a API recusa subir com `COFRE_SEGREDO` fraco ou de exemplo.
+
+Organização e owner inicial (uma vez por instalação; o link de convite é
+`https://<dominio>/#/convite/<token>`, entregue ao owner por canal próprio):
+
+```bash
+docker compose run --rm -T api python -m app.cli criar-org --nome "Minha Empresa" --email dono@empresa.com
+# {"org_id": "...", "usuario_id": "...", "token": "..."}
+```
+
 O papel `cofre_app` é criado por `db/init/` só no primeiro boot (volume vazio).
 Para recriar o banco do zero: `docker compose down -v`.
 
