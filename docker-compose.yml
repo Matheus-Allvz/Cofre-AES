@@ -1,8 +1,50 @@
 services:
-  cofre-aes:
-    build: .
-    container_name: cofre-aes
+  db:
+    image: postgres:16-alpine
     restart: unless-stopped
+    environment:
+      POSTGRES_USER: cofre_dono
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+      POSTGRES_DB: cofre
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD:?defina APP_DB_PASSWORD no .env}
+    volumes:
+      - dados:/var/lib/postgresql/data
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cofre_dono -d cofre"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    mem_limit: 512m
+
+  migrar:
+    build: .
+    image: cofre-empresarial-api:local
+    command: ["python", "-m", "app.migrar"]
+    restart: "no"
+    environment:
+      DATABASE_URL_DONO: postgresql://cofre_dono:${POSTGRES_PASSWORD}@db:5432/cofre
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+    mem_limit: 256m
+
+  api:
+    build: .
+    image: cofre-empresarial-api:local
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://cofre_app:${APP_DB_PASSWORD}@db:5432/cofre
+      COFRE_SEGREDO: ${COFRE_SEGREDO:?defina COFRE_SEGREDO no .env}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
     ports:
-      - "127.0.0.1:8095:8000"
-    env_file: ./.env
+      - "127.0.0.1:8098:8000"
+    depends_on:
+      migrar:
+        condition: service_completed_successfully
+    mem_limit: 256m
+
+volumes:
+  dados:
