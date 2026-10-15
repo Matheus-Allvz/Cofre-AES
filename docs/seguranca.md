@@ -33,10 +33,11 @@ riscos residuais conhecidos e as decisões que os aceitam.
   proxy, um cliente troca o XFF a cada requisição e contorna o limite por IP (o limite por conta
   continua valendo). Hoje a porta só escuta em `127.0.0.1`; a Fase 9 fecha o ponto (configuração
   do Caddy confirmada e `--forwarded-allow-ips` restrito ao proxy).
-- **Purga de `limites`.** Sem job externo: a cada login (ou outra credencial) válido, as linhas
-  sem bloqueio vigente e com janela iniciada há mais de 15 min são apagadas — elas seriam
-  recriadas do zero na próxima tentativa, então apagar não muda nenhuma regra. Sob ataque sem
-  nenhum login válido a tabela cresce com o número de IPs distintos até o próximo login.
+- **Purga de `limites`.** Sem job externo: as linhas sem bloqueio vigente e com janela iniciada
+  há mais de 15 min são apagadas a cada credencial válida e também quando a janela de um IP/rota
+  abre (1ª requisição do minuto em `contar_ip`). Elas seriam recriadas do zero na próxima
+  tentativa, então apagar não muda nenhuma regra; e a tabela fica limitada ao que está dentro
+  das janelas mesmo sob ataque sem nenhum login válido.
 
 ## MFA (RF-I03, RF-I04)
 
@@ -56,4 +57,11 @@ riscos residuais conhecidos e as decisões que os aceitam.
 - `recuperar/iniciar` exige o `recup_auth` derivado da Recovery Key **e** o segundo fator (se o
   MFA estiver ativo) antes de entregar a userKey envelopada pelo kit. O token de conclusão vale
   5 min, uma vez. A conclusão troca senha e kit e revoga todas as sessões.
+- Qualquer troca de credencial (conclusão de recuperação, `POST /eu/senha`, ativar ou desativar
+  o MFA) invalida **todos** os tokens de recuperação pendentes do usuário na mesma transação:
+  um token "estacionado" antes não desfaz a remediação do dono. A conclusão reconfere o estado
+  da conta (suspensa/removida → 401 `token_invalido`, nada muda).
+- Desativar o MFA revoga as outras sessões do usuário (como a troca de senha).
+- Segredo TOTP adulterado ou trocado entre usuários (AAD com o id) falha fechado: 401
+  `mfa_invalido` e evento `auth.mfa` falha (`meta.metodo = totp_segredo_invalido`).
 - Sem senha-mestra e sem kit, o acesso pessoal é perdido (D18).

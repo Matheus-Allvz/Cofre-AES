@@ -129,7 +129,7 @@ Extensões: `citext`. `*_cif` = envelope texto (`v1`/`x1`). Todas as tabelas de 
 | `limites` | `chave text pk ('conta:<sha256 email>' / 'ip:<ip>:<rota>'), falhas int, janela_inicio, bloqueado_ate` | 3 |
 | `usuarios` | `id uuid pk, org_id, email citext unique, nome text, papel text check(owner/admin/member), estado text check(convidado/aceito/ativo/suspenso/removido), kdf jsonb, kdf_sal bytea, auth_hash text, chave_usuario_cif, chave_usuario_recup_cif, recup_auth_hmac bytea, chave_publica bytea, chave_privada_cif, fingerprint_confirmado text, confirmado_por uuid, totp_segredo_cif text, totp_ultimo_passo bigint, criado_em, atualizado_em` | 3 (TOTP em 4) |
 | `convites` | `id uuid pk, org_id, usuario_id uuid fk, token_hash bytea unique, papel, criado_por, expira_em, usado_em, revogado_em` | 3 |
-| `sessoes` | `id uuid pk, usuario_id, token_hash bytea unique, criada_em, ultimo_uso, expira_em, ip, user_agent, mfa_pendente bool, revogada_em` | 3 |
+| `sessoes` | `id uuid pk, usuario_id, token_hash bytea unique, criada_em, ultimo_uso, expira_em, ip, user_agent, mfa_pendente bool, revogada_em` — `mfa_pendente` **sem uso desde a Fase 4** (calculado por requisição: `politicas.mfa_obrigatorio AND totp_ultimo_passo IS NULL`); não confiar na coluna | 3 |
 | `recuperacoes` | `token_hash bytea pk, usuario_id, expira_em (5 min), usado_em` | 4 |
 | `codigos_mfa` | `usuario_id, codigo_hmac bytea, usado_em` (pk usuario_id+codigo_hmac) | 4 |
 | `politicas` | `org_id pk, mfa_obrigatorio bool default true, inatividade_min int check 5..60 default 15, atualizado_em` | 4 |
