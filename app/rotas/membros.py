@@ -43,6 +43,10 @@ def listar(request: Request, sessao: seguranca.Ativo):
     return membros
 
 
+class SemMudanca(dict):
+    """Resposta de uma ação que não mudou nada: sem UPDATE e sem evento."""
+
+
 def _acao(
     request: Request,
     sessao,
@@ -55,8 +59,9 @@ def _acao(
     meta=None,
 ):
     """Esqueleto comum, numa transação: trava a gestão da org e o alvo; checa, nesta ordem,
-    404, último owner, auto_acao, admin sobre owner (403) e estado (409); aplica `efeito` e
-    grava o evento. `tira_owner`: a ação deixa o alvo de contar como owner ativo."""
+    404, admin sobre owner (403), último owner, auto_acao e estado (409); aplica `efeito` e
+    grava o evento (exceto se `efeito` devolver SemMudanca).
+    `tira_owner`: a ação deixa o alvo de contar como owner ativo."""
     with db.transacao(request.app.state.pool) as conn:
         # ponytail: uma trava por org serializa a gestão de membros (10–200 usuários); é ela
         # que impede dois owners de se suspenderem ao mesmo tempo e zerarem os owners.
@@ -76,6 +81,8 @@ def _acao(
         )
         if alvo is None:
             raise HTTPException(404, "nao_encontrado")
+        if alvo["papel"] == "owner" and ator["papel"] != "owner":
+            raise HTTPException(403, "sem_permissao")
         if tira_owner and alvo["papel"] == "owner" and alvo["estado"] == "ativo":
             (outros,) = conn.execute(
                 """SELECT count(*) FROM usuarios WHERE org_id = %s AND papel = 'owner'
@@ -86,11 +93,11 @@ def _acao(
                 raise HTTPException(409, "ultimo_owner")
         if alvo_id == sessao.usuario_id:
             raise HTTPException(409, "auto_acao")
-        if alvo["papel"] == "owner" and ator["papel"] != "owner":
-            raise HTTPException(403, "sem_permissao")
         if alvo["estado"] not in estados:
             raise HTTPException(409, "estado_invalido")
         resposta = efeito(conn, alvo)
+        if isinstance(resposta, SemMudanca):
+            return dict(resposta)
         auditoria.registrar(
             conn,
             org_id=sessao.org_id,
@@ -178,6 +185,8 @@ def alterar_papel(alvo_id: UUID, dados: NovoPapel, request: Request, sessao: seg
     requisição: vale na hora para as sessões abertas do alvo, sem precisar revogá-las."""
 
     def efeito(conn, alvo):
+        if alvo["papel"] == dados.papel:  # mesmo papel: 200 idempotente, sem evento
+            return SemMudanca(id=alvo["id"], papel=dados.papel)
         conn.execute(
             "UPDATE usuarios SET papel = %s, atualizado_em = now() WHERE id = %s",
             (dados.papel, alvo["id"]),

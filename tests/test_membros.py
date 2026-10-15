@@ -329,8 +329,9 @@ def test_unico_owner_409(cliente, owner, novo_cliente, banco, acao):
     r = _executar(cliente, acao, eu, papel="member")
     assert (r.status_code, r.json()) == (409, {"erro": "ultimo_owner"})
     admin = ativar(cliente, novo_cliente, "adm@t.invalid", "admin")
+    # Admin sobre owner é 403 antes de qualquer outra regra, mesmo com owner único.
     r = _executar(admin["cliente"], acao, eu, papel="member")
-    assert (r.status_code, r.json()) == (409, {"erro": "ultimo_owner"})
+    assert (r.status_code, r.json()) == (403, {"erro": "sem_permissao"})
     assert ler(banco, "SELECT papel, estado FROM usuarios WHERE id = %s", (eu["id"],)) == [
         ("owner", "ativo")
     ]
@@ -375,6 +376,13 @@ def test_admin_suspende_outro_admin(cliente, owner, novo_cliente):
     a1 = ativar(cliente, novo_cliente, "a1@t.invalid", "admin")
     a2 = ativar(cliente, novo_cliente, "a2@t.invalid", "admin")
     assert _executar(a1["cliente"], "suspender", a2).status_code == 200
+
+
+def test_papel_igual_e_noop_sem_evento(cliente, owner, novo_cliente, banco):
+    m = ativar(cliente, novo_cliente, "igual@t.invalid")
+    r = _executar(cliente, "papel", m, papel="member")
+    assert (r.status_code, r.json()) == (200, {"id": m["id"], "papel": "member"})
+    assert ler(banco, "SELECT count(*) FROM eventos WHERE tipo = 'membro.papel_alterado'") == [(0,)]
 
 
 def test_papel_vale_na_hora_para_sessao_aberta(cliente, owner, novo_cliente):
