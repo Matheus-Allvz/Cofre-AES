@@ -2,17 +2,11 @@
 
 import psycopg
 import pytest
-from conftest import EMAIL_OWNER, H, aceitar_e_logar, payload_aceite
+from conftest import EMAIL_OWNER, H, aceitar_e_logar, convidar, payload_aceite
 
 from app import cli, seguranca
 
 ACEITAR = "/api/v1/convites/aceitar"
-
-
-def convidar(c, email, papel="member"):
-    r = c.post("/api/v1/convites", json={"email": email, "papel": papel}, headers=H)
-    assert r.status_code == 201, r.text
-    return r.json() | {"token": r.json()["link"].removeprefix("/#/convite/")}
 
 
 def test_aceitar_token_inexistente_404(cliente, org):
