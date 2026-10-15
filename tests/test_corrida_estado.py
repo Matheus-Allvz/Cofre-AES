@@ -6,10 +6,27 @@ suspensão/remoção é commitada pela rota real depois da verificação e antes
 Sem a releitura `FOR SHARE` do estado, a sessão/token nasceria e "reviveria" ao reativar.
 """
 
-import pytest
-from conftest import KDF, H, ativar, ativar_mfa, b64u, codigo_totp, env_v1, ler, login
+import base64
+import threading
 
-from app import mfa, seguranca
+import psycopg
+import pytest
+from conftest import (
+    KDF,
+    H,
+    ativar,
+    ativar_mfa,
+    b64u,
+    codigo_totp,
+    convidar,
+    env_v1,
+    esperar_trava,
+    ler,
+    login,
+    payload_aceite,
+)
+
+from app import mfa, seguranca, totp
 
 M = "/api/v1/membros"
 
@@ -126,3 +143,82 @@ def test_desativar_mfa_durante_suspensao_nao_grava(
     assert (r.status_code, r.json()) == (401, {"erro": "nao_autenticado"})
     sql = "SELECT totp_ultimo_passo IS NOT NULL FROM usuarios WHERE id = %s"
     assert ler(banco, sql, (m["id"],)) == [(True,)]
+
+
+def test_confirmar_mfa_durante_suspensao_nao_grava(
+    cliente, owner, novo_cliente, banco, monkeypatch
+):
+    """Herdado da Fase 5: a suspensão entra entre a verificação do código e a gravação."""
+    m = ativar(cliente, novo_cliente, "conf@t.invalid")
+    b32 = m["cliente"].post("/api/v1/eu/mfa/iniciar", headers=H).json()["segredo_base32"]
+    segredo = base64.b32decode(b32 + "=" * (-len(b32) % 8))
+    feito = _durante(
+        monkeypatch,
+        totp,
+        "verificar",
+        lambda: cliente.post(f"{M}/{m['id']}/suspender", headers=H).status_code,
+    )
+    r = m["cliente"].post(
+        "/api/v1/eu/mfa/confirmar", json={"codigo": codigo_totp(segredo)}, headers=H
+    )
+    assert feito == [200]
+    assert (r.status_code, r.json()) == (401, {"erro": "nao_autenticado"})
+    sql = "SELECT totp_ultimo_passo IS NULL FROM usuarios WHERE id = %s"
+    assert ler(banco, sql, (m["id"],)) == [(True,)]
+    sql = "SELECT count(*) FROM codigos_mfa WHERE usuario_id = %s"
+    assert ler(banco, sql, (m["id"],)) == [(0,)]
+
+
+# ---------- Ordem de travas: usuarios antes de convites ----------
+
+
+@pytest.mark.parametrize("rota", ["aceitar", "revogar"])
+def test_convite_trava_usuarios_antes_de_convites(cliente, owner, novo_cliente, banco, rota):
+    """Herdado da Fase 5: remover/suspender travam usuarios e depois convites. Aceitar e revogar
+    convite seguem a mesma ordem: com a linha do usuário presa, a requisição espera ali SEM ter
+    pegado a do convite (antes, pegava o convite e esperava o usuário: ciclo de deadlock)."""
+    conv = convidar(cliente, "ordem@t.invalid")
+    if rota == "aceitar":
+        pedir = lambda: novo_cliente().post(  # noqa: E731
+            "/api/v1/convites/aceitar", json=payload_aceite(conv["token"])
+        )
+    else:
+        pedir = lambda: cliente.delete(f"/api/v1/convites/{conv['convite_id']}", headers=H)  # noqa: E731
+    resposta = {}
+    with psycopg.connect(banco["dono"]) as trava:
+        trava.execute("SELECT 1 FROM usuarios WHERE id = %s FOR UPDATE", (conv["usuario_id"],))
+        t = threading.Thread(target=lambda: resposta.update(r=pedir()))
+        t.start()
+        esperar_trava(banco)
+        with psycopg.connect(banco["dono"]) as outro:  # o convite continua livre
+            outro.execute(
+                "SELECT 1 FROM convites WHERE id = %s FOR UPDATE NOWAIT", (conv["convite_id"],)
+            )
+    t.join()
+    assert resposta["r"].status_code == (201 if rota == "aceitar" else 204)
+
+
+def test_remover_e_aceitar_em_paralelo_sem_deadlock(cliente, owner, novo_cliente, banco):
+    for i in range(6):
+        conv = convidar(cliente, f"par{i}@t.invalid")
+        largada, status = threading.Barrier(2), {}
+        aceite = payload_aceite(conv["token"])
+
+        def aceitar(aceite=aceite, largada=largada, status=status):
+            largada.wait()
+            status["aceitar"] = novo_cliente().post("/api/v1/convites/aceitar", json=aceite)
+
+        def remover(uid=conv["usuario_id"], largada=largada, status=status):
+            largada.wait()
+            status["remover"] = cliente.delete(f"{M}/{uid}", headers=H)
+
+        t = [threading.Thread(target=f) for f in (aceitar, remover)]
+        for x in t:
+            x.start()
+        for x in t:
+            x.join()
+        assert status["remover"].status_code == 200
+        assert status["aceitar"].status_code in (201, 410)
+        assert ler(banco, "SELECT estado FROM usuarios WHERE id = %s", (conv["usuario_id"],)) == [
+            ("removido",)
+        ]

@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from psycopg_pool import PoolTimeout
 
 from app import config, db, erros, logs
-from app.rotas import auth, conta, convites, membros, org
+from app.rotas import auth, cofre, conta, convites, membros, org
 
 logs.configurar()
 log = logging.getLogger("cofre.http")
@@ -30,6 +30,7 @@ app.include_router(convites.rota, prefix="/api/v1")
 app.include_router(conta.rota, prefix="/api/v1")
 app.include_router(org.rota, prefix="/api/v1")
 app.include_router(membros.rota, prefix="/api/v1")
+app.include_router(cofre.rota, prefix="/api/v1")
 
 
 @app.middleware("http")

@@ -1,6 +1,7 @@
 import base64
 import os
 import secrets
+import time
 from datetime import UTC, datetime, timedelta
 
 import psycopg
@@ -236,3 +237,14 @@ def login(c: TestClient, auth: str, email: str = EMAIL_OWNER, **extra):
 def ler(banco, consulta: str, params=()):
     with psycopg.connect(banco["dono"]) as conn:
         return conn.execute(consulta, params).fetchall()
+
+
+def esperar_trava(banco, timeout=10):
+    """Espera alguma conexão da app ficar parada numa trava de linha (testes de ordem/corrida)."""
+    fim = time.monotonic() + timeout
+    sql = "SELECT 1 FROM pg_stat_activity WHERE usename = 'cofre_app' AND wait_event_type = 'Lock'"
+    while time.monotonic() < fim:
+        if ler(banco, sql):
+            return
+        time.sleep(0.02)
+    raise AssertionError("a requisição não chegou a esperar a trava")
