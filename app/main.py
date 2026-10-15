@@ -63,9 +63,9 @@ ROTAS_GRANDES = re.compile(
     r"^(POST /api/v1/colecoes/[^/]+/rotacionar|PUT /api/v1/membros/[^/]+/papel"
     r"|POST /api/v1/membros/[^/]+/reativar)$"
 )
-# ponytail: um corpo grande por vez no processo (o parse JSON de 20 MiB pesa várias vezes isso,
-# ver mem_limit); o segundo recebe 503 ocupado + Retry-After e o cliente repete. Fila por
-# usuário se rotações simultâneas virarem rotina.
+# ponytail: um corpo grande (> 256 KiB) por vez no processo (o parse JSON de 20 MiB pesa
+# várias vezes isso, ver mem_limit); o segundo recebe 503 ocupado + Retry-After e o cliente
+# repete. Fila por usuário se rotações simultâneas virarem rotina.
 MAX_GRANDES = 1
 _grandes = 0
 _trava_grandes = threading.Lock()
@@ -139,7 +139,9 @@ class LimiteCorpo:
                     raise
                 await _erro(send, 413, "corpo_grande")
 
-        if not grande:
+        # Só ocupa a vaga quem pode passar do limite pequeno (Content-Length acima dele ou
+        # chunked): troca de papel comum nas mesmas rotas segue sem fila.
+        if not grande or (tamanho is not None and int(tamanho) <= LIMITE_CORPO):
             return await seguir()
         global _grandes
         with _trava_grandes:

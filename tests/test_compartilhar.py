@@ -436,9 +436,18 @@ def test_dois_rotacionar_concorrentes_um_200_um_409(cliente, banco, rotacao, mon
 
 
 def test_corpo_grande_concorrente_recebe_503(cliente, banco, rotacao, monkeypatch):
-    monkeypatch.setattr(main, "_grandes", 1)  # outro corpo grande em andamento
-    r = rotacionar(cliente, rotacao["col"], corpo_rotacao(banco, rotacao["col"]))
+    """Com outro corpo grande em andamento, só o corpo > 256 KiB espera a vez (503); o pequeno
+    na mesma rota passa."""
+    monkeypatch.setattr(main, "_grandes", 1)
+    col = rotacao["col"]
+    corpo = json.dumps(corpo_rotacao(banco, col)).encode()
+    h = {**H, "Content-Type": "application/json"}
+    r = cliente.post(
+        f"{V}/colecoes/{col}/rotacionar", content=corpo + b" " * (300 << 10), headers=h
+    )
     assert (r.status_code, r.json(), r.headers["retry-after"]) == (503, {"erro": "ocupado"}, "5")
+    r = cliente.post(f"{V}/colecoes/{col}/rotacionar", content=corpo, headers=h)
+    assert (r.status_code, r.json()) == (200, {"chave_ver": 2})
 
 
 def _segura_item(banco, item_id):
