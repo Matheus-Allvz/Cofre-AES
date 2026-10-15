@@ -1,4 +1,5 @@
 import base64
+import logging
 import os
 from dataclasses import dataclass
 
@@ -21,8 +22,15 @@ def carregar() -> Config:
     cookie_secure = os.environ.get("COOKIE_SECURE", "true").strip().lower() != "false"
     # 32 bytes aleatórios têm ~30 valores distintos; < 16 = zeros, padrão repetido ou
     # o valor fictício do .env.exemplo. Só aceito em dev local (COOKIE_SECURE=false).
-    if cookie_secure and len(set(segredo)) < 16:
-        raise RuntimeError("COFRE_SEGREDO fraco ou de exemplo: gere com openssl rand -base64 32")
+    if len(set(segredo)) < 16:
+        if cookie_secure:
+            raise RuntimeError(
+                "COFRE_SEGREDO fraco ou de exemplo: gere com openssl rand -base64 32"
+            )
+        logging.getLogger("cofre.config").warning(
+            "COFRE_SEGREDO fraco ou de exemplo aceito só porque COOKIE_SECURE=false;"
+            " nunca use assim fora do desenvolvimento local (gere com openssl rand -base64 32)"
+        )
     return Config(
         database_url=os.environ["DATABASE_URL"],
         cofre_segredo=segredo,

@@ -117,3 +117,19 @@ def test_config_recusa_segredo_fraco_com_cookie_secure(monkeypatch):
         # Só em dev local sem HTTPS o segredo de exemplo passa.
         monkeypatch.setenv("COOKIE_SECURE", "false")
         assert config.carregar().cookie_secure is False
+
+
+def test_config_avisa_segredo_fraco_sem_cookie_secure(monkeypatch, caplog):
+    """Herdado: segredo fraco/de exemplo com COOKIE_SECURE=false sobe, mas com WARNING."""
+    monkeypatch.setenv("DATABASE_URL", "postgresql://x")
+    monkeypatch.setenv("COOKIE_SECURE", "false")
+    monkeypatch.setenv("COFRE_SEGREDO", base64.b64encode(bytes(32)).decode())
+    with caplog.at_level("WARNING", logger="cofre.config"):
+        config.carregar()
+    avisos = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(avisos) == 1 and "COFRE_SEGREDO fraco" in avisos[0].getMessage()
+    caplog.clear()
+    monkeypatch.setenv("COFRE_SEGREDO", base64.b64encode(secrets.token_bytes(32)).decode())
+    with caplog.at_level("WARNING", logger="cofre.config"):
+        config.carregar()
+    assert not caplog.records
