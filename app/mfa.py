@@ -3,6 +3,7 @@
 import base64
 import secrets
 
+from cryptography.exceptions import InvalidTag
 from fastapi import HTTPException
 
 from app import auditoria, cifra_servidor, db, relogio, seguranca, totp
@@ -33,6 +34,14 @@ def gravar_codigos(conn, segredo: bytes, usuario_id) -> list[str]:
     return codigos
 
 
+def chave_totp(segredo: bytes, usuario_id, envelope: str) -> bytes | None:
+    """Segredo TOTP decifrado, ou None se o envelope foi adulterado/trocado (falha fechada)."""
+    try:
+        return cifra_servidor.decifrar(segredo, usuario_id, envelope)
+    except InvalidTag, ValueError:
+        return None
+
+
 def exigir_segundo_fator(pool, segredo: bytes, u: dict, totp_digitado, codigo, origem) -> None:
     """`u`: id, org_id, totp_segredo_cif, totp_ultimo_passo. Sem MFA ativo: nada.
 
@@ -51,8 +60,8 @@ def exigir_segundo_fator(pool, segredo: bytes, u: dict, totp_digitado, codigo, o
     }
     with db.transacao(pool) as conn:
         if totp_digitado:
-            chave = cifra_servidor.decifrar(segredo, u["id"], u["totp_segredo_cif"])
-            passo = totp.verificar(
+            chave = chave_totp(segredo, u["id"], u["totp_segredo_cif"])
+            passo = chave and totp.verificar(
                 chave, totp_digitado, relogio.agora().timestamp(), u["totp_ultimo_passo"]
             )
             # Anti-replay atômico: um passo vale uma vez, mesmo com requisições paralelas.
@@ -63,7 +72,7 @@ def exigir_segundo_fator(pool, segredo: bytes, u: dict, totp_digitado, codigo, o
                     (passo, u["id"], passo),
                 ).fetchone()
             )
-            metodo = "totp"
+            metodo = "totp" if chave else "totp_segredo_invalido"
         else:
             ok = bool(
                 conn.execute(

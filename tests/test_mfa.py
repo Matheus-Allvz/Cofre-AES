@@ -4,6 +4,7 @@ import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
+import psycopg
 import pytest
 from conftest import (
     EMAIL_OWNER,
@@ -184,3 +185,50 @@ def test_desativar_mfa(cliente, owner_mfa, novo_cliente, banco, relogio):
 @pytest.mark.parametrize("rota", ["/api/v1/eu/mfa/iniciar", "/api/v1/eu/mfa/confirmar"])
 def test_mfa_exige_sessao(cliente, rota):
     assert cliente.post(rota, json={"codigo": "123456"}, headers=H).status_code == 401
+
+
+@pytest.mark.parametrize("adulteracao", ["outro_usuario", "bit_trocado"])
+def test_segredo_totp_adulterado_401_com_evento(
+    cliente, owner_mfa, novo_cliente, banco, adulteracao
+):
+    """Correção pós-validação: envelope do TOTP adulterado/trocado → 401 mfa_invalido, não 500."""
+    from app import cifra_servidor
+    from app.main import app
+
+    servidor = app.state.config.cofre_segredo
+    if adulteracao == "outro_usuario":  # envelope válido, mas de outro usuário (AAD diferente)
+        cif = cifra_servidor.cifrar(servidor, "00000000-0000-0000-0000-000000000000", b"x" * 20)
+    else:
+        ((cif,),) = ler(banco, "SELECT totp_segredo_cif FROM usuarios")
+        cif = cif[:-2] + ("AA" if cif[-2:] != "AA" else "BB")
+    with psycopg.connect(banco["dono"]) as conn:
+        conn.execute("UPDATE usuarios SET totp_segredo_cif = %s", (cif,))
+    r = login(novo_cliente(), owner_mfa["auth_hash"], totp=codigo_totp(owner_mfa["segredo"]))
+    assert (r.status_code, r.json()) == (401, {"erro": "mfa_invalido"})
+    eventos = ler(banco, "SELECT resultado, meta->>'metodo' FROM eventos WHERE tipo = 'auth.mfa'")
+    assert eventos[-1] == ("falha", "totp_segredo_invalido")
+
+
+def test_confirmar_com_segredo_adulterado_401(cliente, org, banco, relogio):
+    aceitar_e_logar(cliente, org["token"], EMAIL_OWNER)
+    cliente.post("/api/v1/eu/mfa/iniciar", headers=H)
+    with psycopg.connect(banco["dono"]) as conn:
+        conn.execute(
+            "UPDATE usuarios SET totp_segredo_cif = 'v1.AAAAAAAAAAAAAAAA.AAAAAAAAAAAAAAAAAAAAAA'"
+        )
+    r = cliente.post("/api/v1/eu/mfa/confirmar", json={"codigo": "123456"}, headers=H)
+    assert (r.status_code, r.json()) == (401, {"erro": "mfa_invalido"})
+
+
+def test_desativar_mfa_derruba_outras_sessoes(cliente, owner_mfa, novo_cliente, banco):
+    """Correção pós-validação: desativar o MFA revoga as outras sessões do usuário."""
+    politica(banco, mfa_obrigatorio=False)
+    outra = novo_cliente()
+    assert (
+        login(outra, owner_mfa["auth_hash"], codigo_recuperacao=owner_mfa["codigos"][0]).status_code
+        == 200
+    )
+    corpo = {"auth_hash": owner_mfa["auth_hash"], "codigo": codigo_totp(owner_mfa["segredo"])}
+    assert cliente.request("DELETE", "/api/v1/eu/mfa", json=corpo, headers=H).status_code == 204
+    assert outra.get("/api/v1/eu").status_code == 401
+    assert cliente.get("/api/v1/eu").status_code == 200  # a sessão que desativou continua
