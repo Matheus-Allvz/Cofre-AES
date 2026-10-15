@@ -199,7 +199,6 @@ def _email_curto(email: str) -> str:
 def login(dados: Login, request: Request, response: Response):
     pool, origem, segredo = request.app.state.pool, seguranca.origem(request), _segredo(request)
     limites.contar_ip(pool, origem["ip"], "login")
-    limites.checar_conta(pool, dados.email)
     with db.transacao(pool) as conn:
         u = db.linha(
             conn,
@@ -208,18 +207,21 @@ def login(dados: Login, request: Request, response: Response):
             " WHERE email = %s AND auth_hash IS NOT NULL AND estado <> 'removido'",
             (dados.email,),
         )
+    alvo = {"org_id": u and u["org_id"], "ator_id": u and u["id"], **origem}
+    meta = {"email_sha256": _email_curto(dados.email)}
+    # Conta a tentativa antes do Argon2, numa instrução atômica (paralelas não furam o limite).
+    limites.tentar_conta(
+        pool,
+        dados.email,
+        lambda conn: auditoria.registrar(conn, tipo="auth.bloqueio", meta=meta, **alvo),
+    )
     # Sempre exatamente uma verificação Argon2, exista o e-mail ou não (RNF-01).
     guardado = u["auth_hash"] if u else seguranca.HASH_FALSO
     valido = seguranca.verificar_auth(guardado, segredo, seguranca.de_b64u(dados.auth_hash))
 
     if not (valido and u):
-        bloqueou = limites.falha_conta(pool, dados.email)
-        alvo = {"org_id": u and u["org_id"], "ator_id": u and u["id"], **origem}
-        meta = {"email_sha256": _email_curto(dados.email)}
         with db.transacao(pool) as conn:
             auditoria.registrar(conn, tipo="auth.login", resultado="falha", meta=meta, **alvo)
-            if bloqueou:
-                auditoria.registrar(conn, tipo="auth.bloqueio", meta=meta, **alvo)
         raise HTTPException(401, "credenciais_invalidas")
     if u["estado"] == "suspenso":
         raise HTTPException(403, "conta_suspensa")

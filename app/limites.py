@@ -45,31 +45,46 @@ def contar_ip(pool, ip: str | None, rota: str) -> None:
         _bloqueado(inicio + IP_JANELA - agora)
 
 
-def checar_conta(pool, email: str) -> None:
-    agora = relogio.agora()
-    with db.transacao(pool) as conn:
-        linha = conn.execute(
-            "SELECT bloqueado_ate FROM limites WHERE chave = %s", (chave_conta(email),)
-        ).fetchone()
-    if linha and linha[0] and linha[0] > agora:
-        _bloqueado(linha[0] - agora)
+# Uma instrução atômica por tentativa (a linha fica travada pelo ON CONFLICT): requisições
+# paralelas não passam do limite. A tentativa conta ANTES da verificação Argon2; o login
+# certo zera a contagem (limpar_conta). Bloqueada: não soma nem estende o bloqueio.
+_TENTAR = """
+INSERT INTO limites (chave, falhas, janela_inicio) VALUES (%(chave)s, 1, %(agora)s)
+ON CONFLICT (chave) DO UPDATE SET
+  falhas = CASE WHEN limites.bloqueado_ate > %(agora)s THEN limites.falhas
+                WHEN limites.bloqueado_ate <= %(agora)s OR limites.janela_inicio <= %(corte)s
+                THEN 1 ELSE limites.falhas + 1 END,
+  janela_inicio = CASE WHEN limites.bloqueado_ate > %(agora)s THEN limites.janela_inicio
+                       WHEN limites.bloqueado_ate <= %(agora)s OR limites.janela_inicio <= %(corte)s
+                       THEN %(agora)s ELSE limites.janela_inicio END,
+  bloqueado_ate = CASE WHEN limites.bloqueado_ate > %(agora)s THEN limites.bloqueado_ate
+                       WHEN limites.bloqueado_ate <= %(agora)s OR limites.janela_inicio <= %(corte)s
+                       THEN NULL
+                       WHEN limites.falhas + 1 > %(max)s THEN %(fim)s
+                       ELSE NULL END
+RETURNING bloqueado_ate"""
 
 
-def falha_conta(pool, email: str) -> bool:
-    """Soma uma falha; devolve True quando esta falha bloqueou a conta."""
+def tentar_conta(pool, email: str, ao_bloquear=None) -> None:
+    """Conta uma tentativa; a 11ª dentro da janela bloqueia por 15 min (429 + Retry-After).
+
+    `ao_bloquear(conn)` roda na mesma transação só quando ESTA tentativa criou o bloqueio.
+    """
     agora = relogio.agora()
-    params = {"chave": chave_conta(email), "agora": agora, "corte": agora - CONTA_BLOQUEIO}
+    fim = agora + CONTA_BLOQUEIO
+    params = {
+        "chave": chave_conta(email),
+        "agora": agora,
+        "corte": agora - CONTA_BLOQUEIO,
+        "max": CONTA_MAX,
+        "fim": fim,
+    }
     with db.transacao(pool) as conn:
-        falhas, _ = conn.execute(_SOMAR, params).fetchone()
-        if falhas < CONTA_MAX:
-            return False
-        conn.execute(
-            """UPDATE limites SET falhas = 0, janela_inicio = %(agora)s,
-                                  bloqueado_ate = %(agora)s + %(bloqueio)s
-               WHERE chave = %(chave)s""",
-            {**params, "bloqueio": CONTA_BLOQUEIO},
-        )
-    return True
+        (bloqueado_ate,) = conn.execute(_TENTAR, params).fetchone()
+        if bloqueado_ate == fim and ao_bloquear:
+            ao_bloquear(conn)
+    if bloqueado_ate and bloqueado_ate > agora:
+        _bloqueado(bloqueado_ate - agora)
 
 
 def limpar_conta(pool, email: str) -> None:
