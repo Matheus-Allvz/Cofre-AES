@@ -84,7 +84,7 @@ async def _erro(send, status: int, codigo: str, extra=()) -> None:
 
 class LimiteCorpo:
     """Limite global do corpo, conferido no Content-Length e contado no stream (chunked):
-    256 KiB; 20 MiB só nas ROTAS_GRANDES, e lá só com cookie de sessão e uma de cada vez.
+    256 KiB; 20 MiB só nas ROTAS_GRANDES com cookie de sessão, uma de cada vez.
     Sem isso, alguns POSTs de 150 MB sem cookie (até no /prelogin) matavam a API por OOM."""
 
     def __init__(self, app):
@@ -94,14 +94,15 @@ class LimiteCorpo:
         asgi = self.app
         if scope["type"] != "http":
             return await asgi(scope, receive, send)
-        grande = bool(ROTAS_GRANDES.match(f"{scope['method']} {scope['path']}"))
-        limite = LIMITE_GRANDE if grande else LIMITE_CORPO
         headers = dict(scope["headers"])
+        # Sem cookie de sessão a rota grande vale o limite pequeno (a resposta seria 401/403).
+        grande = b"sessao=" in headers.get(b"cookie", b"") and bool(
+            ROTAS_GRANDES.match(f"{scope['method']} {scope['path']}")
+        )
+        limite = LIMITE_GRANDE if grande else LIMITE_CORPO
         tamanho = headers.get(b"content-length")
         if tamanho is not None and (not tamanho.isdigit() or int(tamanho) > limite):
             return await _erro(send, 413, "corpo_grande")
-        if grande and b"sessao=" not in headers.get(b"cookie", b""):
-            return await _erro(send, 401, "nao_autenticado")
         lidos = 0
         excedeu = respondeu = False
 

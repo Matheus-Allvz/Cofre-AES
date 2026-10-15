@@ -63,17 +63,19 @@ def test_corpo_dentro_do_limite_segue_normal(cliente):
     assert r.status_code == 422  # passou do limite de corpo e caiu na validação normal
 
 
-def test_rota_grande_exige_cookie_e_aceita_ate_20_mib(cliente):
+def test_rota_grande_so_com_cookie_aceita_ate_20_mib(cliente):
     url = f"{V}/colecoes/00000000-0000-0000-0000-000000000000/rotacionar"
     h = {"Content-Type": "application/json", "X-Cofre": "1"}
-    r = cliente.post(url, content=b"{}" + b" " * (1 << 20), headers=h)
-    assert (r.status_code, r.json()) == (401, {"erro": "nao_autenticado"})
+    um_mib = b"{}" + b" " * (1 << 20)
+    r = cliente.post(url, content=um_mib, headers=h)  # sem cookie: limite pequeno
+    assert (r.status_code, r.json()) == (413, CORPO_GRANDE)
     cliente.cookies.set("sessao", "invalida")
-    r = cliente.post(url, content=b"{}" + b" " * (1 << 20), headers=h)
+    r = cliente.post(url, content=um_mib, headers=h)
     assert (r.status_code, r.json()) == (401, {"erro": "nao_autenticado"})  # passou do limite
     r = cliente.post(url, content=b" " * (main.LIMITE_GRANDE + 1), headers=h)
     assert (r.status_code, r.json()) == (413, CORPO_GRANDE)
-    for rota in ("/membros/x/papel", "/membros/x/reativar"):
-        metodo = "PUT" if rota.endswith("papel") else "POST"
-        r = cliente.request(metodo, V + rota, content=b" " * (1 << 20), headers=h)
+    for metodo, rota in (("PUT", "/membros/x/papel"), ("POST", "/membros/x/reativar")):
+        r = cliente.request(metodo, V + rota, content=um_mib, headers=h)
         assert r.status_code != 413, rota
+    r = cliente.post(f"{V}/prelogin", content=um_mib, headers=h)  # cookie não abre as outras
+    assert (r.status_code, r.json()) == (413, CORPO_GRANDE)
