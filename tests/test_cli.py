@@ -35,3 +35,36 @@ def test_segunda_org_recusada(banco, monkeypatch, capsys):
 def test_cli_exige_subcomando():
     with pytest.raises(SystemExit):
         cli.main([])
+
+
+def test_reemitir_convite_do_owner_bootstrap(banco, monkeypatch, capsys, cliente):
+    """Herdado: novo convite invalida o anterior; só para owner ainda `convidado`."""
+    from conftest import payload_aceite
+
+    monkeypatch.setenv("DATABASE_URL", banco["app"])
+    assert cli.main(["criar-org", "--nome", "Acme", "--email", "dono@acme.invalid"]) == 0
+    antigo = json.loads(capsys.readouterr().out)["token"]
+    assert cli.main(["reemitir-convite", "--email", " Dono@Acme.Invalid "]) == 0
+    saida = json.loads(capsys.readouterr().out)
+    assert set(saida) == {"usuario_id", "token"} and saida["token"] != antigo
+
+    consultar = "/api/v1/convites/consultar"
+    assert cliente.post(consultar, json={"token": antigo}).status_code == 410
+    assert cliente.post(consultar, json={"token": saida["token"]}).status_code == 200
+    r = cliente.post("/api/v1/convites/aceitar", json=payload_aceite(saida["token"]))
+    assert r.json()["estado"] == "ativo"  # continua sendo o bootstrap
+    with psycopg.connect(banco["dono"]) as conn:
+        tipos = [t for (t,) in conn.execute("SELECT tipo FROM eventos ORDER BY id")]
+    assert tipos == [
+        "org.criada",
+        "convite.criado",
+        "convite.revogado",
+        "convite.criado",
+        "convite.aceito",
+    ]
+
+    assert cli.main(["reemitir-convite", "--email", "dono@acme.invalid"]) == 1  # já aceitou
+    # Última linha: o stderr capturado também recebe ruído do logging do TestClient.
+    erro = capsys.readouterr().err.strip().splitlines()[-1]
+    assert json.loads(erro) == {"erro": "owner_convidado_nao_encontrado"}
+    assert cli.main(["reemitir-convite", "--email", "ninguem@acme.invalid"]) == 1

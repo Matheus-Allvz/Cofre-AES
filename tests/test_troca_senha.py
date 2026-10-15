@@ -51,3 +51,28 @@ def test_troca_exige_x_cofre_e_kdf_padrao(cliente, owner):
     assert cliente.post("/api/v1/eu/senha", json=corpo).status_code == 403
     corpo["kdf"]["t"] = 1
     assert cliente.post("/api/v1/eu/senha", json=corpo, headers=H).status_code == 422
+
+
+def test_troca_exige_totp_com_mfa_ativo(cliente, owner_mfa):
+    """RF-I10 (Fase 4): com MFA ativo, a troca exige TOTP."""
+    from conftest import codigo_totp
+
+    segredo = owner_mfa["segredo"]
+    corpo = _troca(owner_mfa["auth_hash"], b64u(32))
+    r = cliente.post("/api/v1/eu/senha", json=corpo, headers=H)
+    assert (r.status_code, r.json()) == (401, {"erro": "mfa_requerido"})
+    errado = "000000" if codigo_totp(segredo) != "000000" else "111111"
+    r = cliente.post("/api/v1/eu/senha", json=corpo | {"totp": errado}, headers=H)
+    assert (r.status_code, r.json()) == (401, {"erro": "mfa_invalido"})
+    r = cliente.post("/api/v1/eu/senha", json=corpo | {"totp": codigo_totp(segredo)}, headers=H)
+    assert r.status_code == 204
+
+
+def test_senha_atual_errada_conta_contra_a_conta(cliente, owner, novo_cliente):
+    """Herdado: 10 senhas atuais erradas em /eu/senha → 429, inclusive para o login."""
+    for _ in range(10):
+        r = cliente.post("/api/v1/eu/senha", json=_troca(b64u(32), b64u(32)), headers=H)
+        assert r.status_code == 401
+    r = cliente.post("/api/v1/eu/senha", json=_troca(owner["auth_hash"], b64u(32)), headers=H)
+    assert (r.status_code, r.json()) == (429, {"erro": "bloqueado"})
+    assert _login(novo_cliente(), owner["auth_hash"]).status_code == 429

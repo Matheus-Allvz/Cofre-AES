@@ -36,11 +36,25 @@ def chave_conta(email: str) -> str:
     return "conta:" + hashlib.sha256(email.encode()).hexdigest()
 
 
+# Linha sem bloqueio vigente e com janela iniciada há mais de 15 min (a maior janela, a da
+# conta) seria recriada do zero na próxima tentativa: apagar não muda nenhuma regra.
+_PURGAR = """DELETE FROM limites WHERE janela_inicio <= %(corte)s
+             AND (bloqueado_ate IS NULL OR bloqueado_ate <= %(agora)s)"""
+
+
+def _purgar(conn, agora) -> None:
+    conn.execute(_PURGAR, {"corte": agora - CONTA_BLOQUEIO, "agora": agora})
+
+
 def contar_ip(pool, ip: str | None, rota: str) -> None:
     agora = relogio.agora()
     params = {"chave": f"ip:{ip}:{rota}", "agora": agora, "corte": agora - IP_JANELA}
     with db.transacao(pool) as conn:
         total, inicio = conn.execute(_SOMAR, params).fetchone()
+        # Purga oportunista também aqui: roda quando a janela deste IP/rota abre (1ª requisição
+        # do minuto), então a tabela não cresce sem teto mesmo sob ataque sem login válido.
+        if total == 1:
+            _purgar(conn, agora)
     if total > IP_MAX:
         _bloqueado(inicio + IP_JANELA - agora)
 
@@ -88,5 +102,8 @@ def tentar_conta(pool, email: str, ao_bloquear=None) -> None:
 
 
 def limpar_conta(pool, email: str) -> None:
+    """Zera a conta após credencial válida e purga o que já não vale nada (sem job externo)."""
+    agora = relogio.agora()
     with db.transacao(pool) as conn:
         conn.execute("DELETE FROM limites WHERE chave = %s", (chave_conta(email),))
+        _purgar(conn, agora)

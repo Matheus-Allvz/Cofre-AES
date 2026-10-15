@@ -1,14 +1,16 @@
-"""Rotas públicas de conta (§5.1) e da própria conta (§5.2) da Fase 3."""
+"""Rotas públicas de conta (§5.1) e da própria conta (§5.2): convite, login, senha, recuperação."""
 
 import hashlib
 import hmac
+import secrets
+from datetime import timedelta
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from psycopg.types.json import Jsonb
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 
-from app import auditoria, db, limites, relogio, seguranca
+from app import auditoria, db, limites, mfa, relogio, seguranca
 from app.rotas.convites import Email
 
 KDF_PADRAO = {"tipo": "argon2id", "m": 65536, "t": 3, "p": 1}
@@ -67,18 +69,45 @@ class Aceite(Entrada):
 class Login(Entrada):
     email: Email
     auth_hash: B64U32
-    totp: str | None = Field(default=None, max_length=16)  # Fase 4
-    codigo_recuperacao: str | None = Field(default=None, max_length=64)  # Fase 4
+    totp: str | None = Field(default=None, max_length=16)
+    codigo_recuperacao: str | None = Field(default=None, max_length=64)
 
 
 class TrocaSenha(Entrada):
     auth_hash_atual: B64U32
-    totp: str | None = Field(default=None, max_length=16)  # Fase 4
+    totp: str | None = Field(default=None, max_length=16)
     kdf: dict
     sal: B64U16
     auth_hash: B64U32
     chave_usuario_cif: V1
     _kdf = field_validator("kdf")(_kdf_padrao)
+
+
+class RecuperarIniciar(Entrada):
+    email: Email
+    recup_auth: B64U32
+    totp: str | None = Field(default=None, max_length=16)
+    codigo_recuperacao: str | None = Field(default=None, max_length=64)
+
+
+class RecuperarConcluir(Entrada):
+    token: Token
+    kdf: dict
+    sal: B64U16
+    auth_hash: B64U32
+    chave_usuario_cif: V1
+    chave_usuario_recup_cif: V1
+    recup_auth: B64U32
+    _kdf = field_validator("kdf")(_kdf_padrao)
+
+
+# Usuário + política da org: tudo que login, /eu, troca de senha e recuperação leem.
+SQL_USUARIO = """SELECT u.id, u.org_id, u.email, u.nome, u.papel, u.estado, u.kdf, u.kdf_sal,
+                      u.auth_hash, u.chave_usuario_cif, u.chave_privada_cif, u.chave_publica,
+                      u.chave_usuario_recup_cif, u.recup_auth_hmac,
+                      u.totp_segredo_cif, u.totp_ultimo_passo,
+                      p.mfa_obrigatorio, p.inatividade_min
+               FROM usuarios u JOIN politicas p ON p.org_id = u.org_id"""
 
 
 def _segredo(request: Request) -> bytes:
@@ -93,7 +122,9 @@ def _perfil(u: dict) -> dict:
         "chave_usuario_cif": u["chave_usuario_cif"],
         "chave_privada_cif": u["chave_privada_cif"],
         "chave_publica": seguranca.b64u(u["chave_publica"]),
-        "politica": seguranca.POLITICA,
+        "politica": {k: u[k] for k in ("mfa_obrigatorio", "inatividade_min")},
+        "mfa_ativo": u["totp_ultimo_passo"] is not None,
+        "mfa_pendente": u["mfa_obrigatorio"] and u["totp_ultimo_passo"] is None,
     }
 
 
@@ -202,9 +233,8 @@ def login(dados: Login, request: Request, response: Response):
     with db.transacao(pool) as conn:
         u = db.linha(
             conn,
-            "SELECT id, org_id, email, nome, papel, estado, kdf, kdf_sal, auth_hash,"
-            " chave_usuario_cif, chave_privada_cif, chave_publica FROM usuarios"
-            " WHERE email = %s AND auth_hash IS NOT NULL AND estado <> 'removido'",
+            SQL_USUARIO
+            + " WHERE u.email = %s AND u.auth_hash IS NOT NULL AND u.estado <> 'removido'",
             (dados.email,),
         )
     alvo = {"org_id": u and u["org_id"], "ator_id": u and u["id"], **origem}
@@ -225,6 +255,8 @@ def login(dados: Login, request: Request, response: Response):
         raise HTTPException(401, "credenciais_invalidas")
     if u["estado"] == "suspenso":
         raise HTTPException(403, "conta_suspensa")
+    # Fator ausente/errado não zera a contagem: a tentativa já contou contra a conta.
+    mfa.exigir_segundo_fator(pool, segredo, u, dados.totp, dados.codigo_recuperacao, origem)
 
     limites.limpar_conta(pool, dados.email)
     token, token_hash = seguranca.novo_token()
@@ -261,7 +293,7 @@ def login(dados: Login, request: Request, response: Response):
         samesite="strict",
         path="/api",
     )
-    return {**_perfil(u), "mfa_pendente": False}
+    return _perfil(u)
 
 
 @rota.post("/logout", status_code=204)
@@ -293,12 +325,7 @@ def logout(request: Request, sessao: seguranca.SessaoAtual):
 @rota.get("/eu")
 def eu(request: Request, sessao: seguranca.SessaoAtual):
     with db.transacao(request.app.state.pool) as conn:
-        u = db.linha(
-            conn,
-            "SELECT id, org_id, email, nome, papel, estado, kdf, kdf_sal, auth_hash,"
-            " chave_usuario_cif, chave_privada_cif, chave_publica FROM usuarios WHERE id = %s",
-            (sessao.usuario_id,),
-        )
+        u = db.linha(conn, SQL_USUARIO + " WHERE u.id = %s", (sessao.usuario_id,))
     return _perfil(u)
 
 
@@ -310,9 +337,7 @@ def trocar_senha(
 ):
     pool, origem, segredo = request.app.state.pool, seguranca.origem(request), _segredo(request)
     with db.transacao(pool) as conn:
-        (guardado,) = conn.execute(
-            "SELECT auth_hash FROM usuarios WHERE id = %s", (sessao.usuario_id,)
-        ).fetchone()
+        u = db.linha(conn, SQL_USUARIO + " WHERE u.id = %s", (sessao.usuario_id,))
     evento = {
         "org_id": sessao.org_id,
         "ator_id": sessao.usuario_id,
@@ -321,10 +346,21 @@ def trocar_senha(
         "alvo_id": str(sessao.usuario_id),
         **origem,
     }
-    if not seguranca.verificar_auth(guardado, segredo, seguranca.de_b64u(dados.auth_hash_atual)):
+    # Senha atual errada conta contra a conta, como no login: sessão roubada não vira oráculo.
+    limites.tentar_conta(
+        pool,
+        sessao.email,
+        lambda conn: auditoria.registrar(
+            conn, tipo="auth.bloqueio", org_id=sessao.org_id, ator_id=sessao.usuario_id, **origem
+        ),
+    )
+    atual = seguranca.de_b64u(dados.auth_hash_atual)
+    if not seguranca.verificar_auth(u["auth_hash"], segredo, atual):
         with db.transacao(pool) as conn:
-            auditoria.registrar(conn, resultado="falha", **evento)
+            auditoria.registrar(conn, **(evento | {"resultado": "falha"}))
         raise HTTPException(401, "credenciais_invalidas")
+    mfa.exigir_segundo_fator(pool, segredo, u, dados.totp, None, origem)
+    limites.limpar_conta(pool, sessao.email)
     novo_hash = seguranca.hash_auth(segredo, seguranca.de_b64u(dados.auth_hash))
     with db.transacao(pool) as conn:
         conn.execute(
@@ -345,5 +381,124 @@ def trocar_senha(
                WHERE usuario_id = %s AND id <> %s AND revogada_em IS NULL""",
             (relogio.agora(), sessao.usuario_id, sessao.id),
         )
+        seguranca.invalidar_recuperacoes(conn, sessao.usuario_id)
         auditoria.registrar(conn, **evento)
+    return Response(status_code=204)
+
+
+# ---------- Recuperação por kit (RF-U06) ----------
+
+RECUPERACAO_VALIDADE = timedelta(minutes=5)
+_RECUP_FALSO = secrets.token_bytes(32)  # comparação de mesmo custo para e-mail inexistente
+
+
+@rota.post("/recuperar/iniciar")
+def recuperar_iniciar(dados: RecuperarIniciar, request: Request):
+    """recup_auth + segundo fator válidos → token de 5 min e a userKey envelopada pelo kit."""
+    pool, origem, segredo = request.app.state.pool, seguranca.origem(request), _segredo(request)
+    limites.contar_ip(pool, origem["ip"], "recuperar")
+    with db.transacao(pool) as conn:
+        u = db.linha(
+            conn,
+            SQL_USUARIO + " WHERE u.email = %s AND u.estado IN ('aceito', 'ativo')"
+            " AND u.recup_auth_hmac IS NOT NULL",
+            (dados.email,),
+        )
+    alvo = {"org_id": u and u["org_id"], "ator_id": u and u["id"], **origem}
+    meta = {"email_sha256": _email_curto(dados.email)}
+    # Mesma conta de tentativas do login: kit e senha dividem o limite de 10 em 15 min.
+    limites.tentar_conta(
+        pool,
+        dados.email,
+        lambda conn: auditoria.registrar(conn, tipo="auth.bloqueio", meta=meta, **alvo),
+    )
+    recebido = seguranca.hmac_pepper(segredo, seguranca.de_b64u(dados.recup_auth))
+    valido = hmac.compare_digest(recebido, bytes(u["recup_auth_hmac"]) if u else _RECUP_FALSO)
+    if not (valido and u):
+        with db.transacao(pool) as conn:
+            auditoria.registrar(conn, tipo="auth.recuperacao", resultado="falha", meta=meta, **alvo)
+        raise HTTPException(401, "credenciais_invalidas")
+    mfa.exigir_segundo_fator(pool, segredo, u, dados.totp, dados.codigo_recuperacao, origem)
+    limites.limpar_conta(pool, dados.email)
+
+    token, token_hash = seguranca.novo_token()
+    with db.transacao(pool) as conn:
+        conn.execute(
+            "INSERT INTO recuperacoes (token_hash, usuario_id, expira_em) VALUES (%s, %s, %s)",
+            (token_hash, u["id"], relogio.agora() + RECUPERACAO_VALIDADE),
+        )
+        auditoria.registrar(
+            conn,
+            tipo="auth.recuperacao",
+            alvo_tipo="usuario",
+            alvo_id=str(u["id"]),
+            meta={"etapa": "iniciada"},
+            **alvo,
+        )
+    return {
+        "token": token,
+        "usuario_id": u["id"],
+        "chave_usuario_recup_cif": u["chave_usuario_recup_cif"],
+    }
+
+
+def _recuperacao_valida(conn, token_hash: bytes, travar: bool = False):
+    sql = (
+        "SELECT usuario_id FROM recuperacoes"
+        " WHERE token_hash = %s AND usado_em IS NULL AND expira_em > %s"
+    )
+    linha = conn.execute(sql + (" FOR UPDATE" if travar else ""), (token_hash, relogio.agora()))
+    linha = linha.fetchone()
+    if not linha:
+        raise HTTPException(401, "token_invalido")
+    return linha[0]
+
+
+@rota.post("/recuperar/concluir", status_code=204)
+def recuperar_concluir(dados: RecuperarConcluir, request: Request):
+    """Nova senha (userKey re-envelopada) e novo kit; revoga todas as sessões."""
+    pool, origem, segredo = request.app.state.pool, seguranca.origem(request), _segredo(request)
+    limites.contar_ip(pool, origem["ip"], "recuperar")
+    token_hash = seguranca.hash_token(dados.token)
+    with db.transacao(pool) as conn:  # token inválido não gasta Argon2
+        _recuperacao_valida(conn, token_hash)
+    # Argon2 fora da transação: a espera pela vez não segura conexão do pool.
+    novo_hash = seguranca.hash_auth(segredo, seguranca.de_b64u(dados.auth_hash))
+    with db.transacao(pool) as conn:
+        usuario_id = _recuperacao_valida(conn, token_hash, travar=True)
+        agora = relogio.agora()
+        # Este token e qualquer outro pendente do usuário deixam de valer.
+        seguranca.invalidar_recuperacoes(conn, usuario_id)
+        alterado = conn.execute(
+            """UPDATE usuarios SET kdf = %s, kdf_sal = %s, auth_hash = %s,
+                      chave_usuario_cif = %s, chave_usuario_recup_cif = %s,
+                      recup_auth_hmac = %s, atualizado_em = now()
+               WHERE id = %s AND estado IN ('aceito', 'ativo') RETURNING org_id""",
+            (
+                Jsonb(dados.kdf),
+                seguranca.de_b64u(dados.sal),
+                novo_hash,
+                dados.chave_usuario_cif,
+                dados.chave_usuario_recup_cif,
+                seguranca.hmac_pepper(segredo, seguranca.de_b64u(dados.recup_auth)),
+                usuario_id,
+            ),
+        ).fetchone()
+        if not alterado:  # suspenso/removido depois do iniciar: rollback, nada muda
+            raise HTTPException(401, "token_invalido")
+        (org_id,) = alterado
+        conn.execute(
+            "UPDATE sessoes SET revogada_em = %s WHERE usuario_id = %s AND revogada_em IS NULL",
+            (agora, usuario_id),
+        )
+        auditoria.registrar(
+            conn,
+            org_id=org_id,
+            ator_id=usuario_id,
+            tipo="auth.recuperacao",
+            alvo_tipo="usuario",
+            alvo_id=str(usuario_id),
+            meta={"etapa": "concluida"},
+            **origem,
+        )
     return Response(status_code=204)
