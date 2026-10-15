@@ -10,7 +10,7 @@ from app import migrar as runner
 def test_aplicada_e_idempotente(banco):
     with psycopg.connect(banco["dono"]) as conn:
         versoes = [v for (v,) in conn.execute("SELECT versao FROM schema_migracoes")]
-    assert versoes == ["0001_base", "0002_contas"]
+    assert versoes == ["0001_base", "0002_contas", "0003_mfa_politicas"]
     assert runner.migrar(banco["dono"]) == []
 
 
@@ -109,5 +109,17 @@ def test_privilegios_da_app(banco):
     crud = "DELETE,INSERT,SELECT,UPDATE"
     assert privs == {
         "eventos": "INSERT,SELECT",
-        **{t: crud for t in ("organizacoes", "usuarios", "convites", "sessoes", "limites")},
+        **{
+            t: crud
+            for t in (
+                "organizacoes",
+                "usuarios",
+                "convites",
+                "sessoes",
+                "limites",
+                "codigos_mfa",
+                "recuperacoes",
+                "politicas",
+            )
+        },
     }
