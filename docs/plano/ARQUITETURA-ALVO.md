@@ -94,9 +94,10 @@ Regex: `^x1\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{22,}$`.
 | chave privada sob userKey | `cofre-emp/v1|privkey|<usuario_id>` |
 | envelope x1 de coleção | `cofre-emp/v1|env-colecao|<org_id>|<colecao_id>|<usuario_dest_id>|<chave_ver>` |
 | nome da coleção | `cofre-emp/v1|colecao-nome|<org_id>|<colecao_id>|<chave_ver>` |
-| meta do item | `cofre-emp/v1|item-meta|<org_id>|<colecao_id>|<item_id>|<chave_ver>|<versao>` |
-| segredo do item | `cofre-emp/v1|item-segredo|<org_id>|<colecao_id>|<item_id>|<chave_ver>|<versao>` |
+| meta do item | `cofre-emp/v1|item-meta|<org_id>|<colecao_id>|<item_id>|<tipo>|<chave_ver>|<versao>` |
+| segredo do item | `cofre-emp/v1|item-segredo|<org_id>|<colecao_id>|<item_id>|<tipo>|<chave_ver>|<versao>` |
 
+`tipo` (Fase 7) é o tipo do item (`login`/`nota`/`chave_api`, §3.4): o servidor não consegue trocar o tipo exibido sem quebrar a decifragem; além disso o cliente confere que as chaves do JSON decifrado pertencem ao tipo (§3.4) e trata divergência como "item adulterado". Sem migração de dados: não havia dados em produção quando o `tipo` entrou no AAD.
 `versao` no AAD é a versão que o item **terá** após a gravação (criação = 1; `PUT` com `If-Match: n` cifra com `n+1`). Rotação mantém `versao` e muda `chave_ver`. Restaurar versão antiga = cliente decifra a antiga e recifra como nova versão.
 
 ### 3.4 Conteúdo dos itens (antes de cifrar)
