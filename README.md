@@ -51,5 +51,9 @@ Outro Postgres de teste: `TEST_DATABASE_URL_DONO=postgresql://...`.
 - Erros no formato `{"erro": "<codigo>"}`; toda resposta com `Cache-Control: no-store`.
 - Logs JSON em stdout, sem corpo de requisição.
 - `/api/saude` (processo) e `/api/pronto` (banco).
+- Argon2 do servidor (64 MiB por hash) com no máximo `COFRE_ARGON2_CONCORRENCIA` (padrão 2)
+  execuções simultâneas; o resto espera a vez (503 `ocupado` após 10 s). O `mem_limit` da api
+  segue a conta ~60 MiB + concorrência × 64 MiB, com folga (ver `docker-compose.yml`). Carga de
+  prova: `python scripts/carga_login.py --projeto <projeto compose> --n 40`.
 
 Plano completo, requisitos e decisões: [`docs/plano/`](docs/plano/).
