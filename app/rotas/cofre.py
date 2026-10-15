@@ -103,8 +103,8 @@ class Rotacao(Entrada):
     chave_ver_atual: int = Field(ge=1)
     nome_cif: Blob
     envelopes: list[EnvelopeRotacao] = Field(min_length=1, max_length=1000)
-    itens: list[ItemRotacao] = Field(max_length=50_000)
-    versoes: list[VersaoRotacao] = Field(max_length=500_000)
+    itens: list[ItemRotacao] = Field(max_length=20_000)
+    versoes: list[VersaoRotacao] = Field(max_length=100_000)  # 10 por item
 
 
 class Edicao(Entrada):

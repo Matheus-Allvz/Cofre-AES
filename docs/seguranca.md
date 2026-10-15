@@ -45,7 +45,13 @@ riscos residuais conhecidos e as decisões que os aceitam.
   sessão. Acima → `413 {"erro":"corpo_grande"}`. Corpo acima de 256 KiB é um por vez (o
   segundo recebe `503 ocupado` + `Retry-After: 5`), porque o parse JSON de 20 MiB ocupa várias
   vezes isso em memória. Antes, três POSTs de 150 MB sem cookie (até no `/prelogin`) derrubavam
-  a API por OOM. Carga reproduzível: `scripts/carga_corpo.py`.
+  a API por OOM. Carga reproduzível: `scripts/carga_corpo.py` (6 POSTs de 150 MB em paralelo,
+  metade chunked, sem cookie → 6 × 413, `RestartCount` 0, pico 63 MiB).
+- **Memória de uma rotação grande (medida).** Rotação real de 18,9 MiB (158 itens com blobs de
+  ~63 KiB): pico de 79 MiB no container. Pior caso patológico, 18,9 MiB em 105 mil entradas
+  minúsculas: 219 MiB (o processo não devolve essa memória ao sistema). Somado às duas vagas do
+  Argon2 (2 × 64 MiB) fica abaixo do `mem_limit` de 384 MiB, com pouca folga: a rotação limita
+  `itens` a 20 000 e `versoes` a 100 000 por requisição e, na Fase 9, vale considerar 512 MiB.
 
 ## MFA (RF-I03, RF-I04)
 
