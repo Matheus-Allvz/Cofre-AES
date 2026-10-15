@@ -38,3 +38,41 @@ def test_formato_com_excecao():
     linha = json.loads(FormatoJson().format(registro))
     assert linha["msg"] == "erro x"
     assert "ValueError: falhou" in linha["exc"]
+
+
+def test_segredos_de_mfa_e_recuperacao_fora_dos_logs(cliente, org, relogio, caplog, capsys):
+    """Fase 4: base32, códigos TOTP, códigos de recuperação, recup_auth e token de recuperação
+    não aparecem em log nem no stdout/stderr capturados."""
+    from conftest import EMAIL_OWNER, H, ativar_mfa, codigo_totp, login, payload_aceite
+
+    with caplog.at_level(logging.DEBUG):
+        dados = payload_aceite(org["token"])
+        cliente.post("/api/v1/convites/aceitar", json=dados)
+        login(cliente, dados["auth_hash"])
+        segredo, codigos = ativar_mfa(cliente)
+        relogio.avancar(seconds=30)
+        codigo = codigo_totp(segredo)
+        login(cliente, dados["auth_hash"], totp=codigo)
+        login(cliente, dados["auth_hash"], codigo_recuperacao=codigos[0])
+        r = cliente.post(
+            "/api/v1/recuperar/iniciar",
+            json={"email": EMAIL_OWNER, "recup_auth": dados["recup_auth"], "totp": "123456"},
+        )
+        relogio.avancar(seconds=30)
+        r = cliente.post(
+            "/api/v1/recuperar/iniciar",
+            json={
+                "email": EMAIL_OWNER,
+                "recup_auth": dados["recup_auth"],
+                "totp": codigo_totp(segredo),
+            },
+        )
+        token = r.json()["token"]
+        cliente.post("/api/v1/eu/senha", json={"auth_hash_atual": "x"}, headers=H)
+    from app import totp
+
+    texto = caplog.text + "".join(capsys.readouterr())
+    texto += "".join(FormatoJson().format(r) for r in caplog.records)
+    assert "/api/v1/recuperar/iniciar" in texto  # o log de requisição existe
+    for sentinela in [totp.base32(segredo), codigo, *codigos, dados["recup_auth"], token]:
+        assert sentinela not in texto

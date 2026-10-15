@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from psycopg_pool import PoolTimeout
 
 from app import config, db, erros, logs
-from app.rotas import auth, convites
+from app.rotas import auth, conta, convites, org
 
 logs.configurar()
 log = logging.getLogger("cofre.http")
@@ -27,6 +27,8 @@ app = FastAPI(title="Cofre AES Empresarial", lifespan=ciclo, docs_url=None, redo
 erros.registrar(app)
 app.include_router(auth.rota, prefix="/api/v1")
 app.include_router(convites.rota, prefix="/api/v1")
+app.include_router(conta.rota, prefix="/api/v1")
+app.include_router(org.rota, prefix="/api/v1")
 
 
 @app.middleware("http")

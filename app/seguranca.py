@@ -21,9 +21,7 @@ from app import db, relogio
 
 HASHER = PasswordHasher()  # padrão do argon2-cffi: Argon2id t=3, m=65536, p=4
 COOKIE = "sessao"
-OCIOSA = timedelta(minutes=15)  # Fase 4 troca pela política da org (inatividade_min)
-ABSOLUTA = timedelta(hours=12)
-POLITICA = {"inatividade_min": 15}
+ABSOLUTA = timedelta(hours=12)  # a ociosa vem da política da org (politicas.inatividade_min)
 
 
 def b64u(dados: bytes) -> str:
@@ -110,10 +108,21 @@ class Sessao:
     org_id: UUID
     papel: str
     estado: str
+    email: str
+    mfa_pendente: bool
+
+
+# Sessão mfa_pendente (política exige MFA e o usuário não tem) só alcança estas rotas (§5).
+_LIVRES_SEM_MFA = ("/api/v1/eu", "/api/v1/logout")
+
+
+def _livre_sem_mfa(caminho: str) -> bool:
+    return caminho in _LIVRES_SEM_MFA or caminho.startswith("/api/v1/eu/mfa")
 
 
 def sessao_atual(request: Request) -> Sessao:
-    """Cookie válido (não revogado, dentro da ociosa e da absoluta) e X-Cofre em não-GET."""
+    """Cookie válido (não revogado, dentro da ociosa da política e da absoluta), X-Cofre em
+    não-GET e, com MFA pendente, só as rotas de configuração de MFA."""
     if request.method not in ("GET", "HEAD") and request.headers.get("x-cofre") != "1":
         raise HTTPException(403, "csrf")
     token = request.cookies.get(COOKIE)
@@ -123,18 +132,23 @@ def sessao_atual(request: Request) -> Sessao:
     with db.transacao(request.app.state.pool) as conn:
         linha = conn.execute(
             """UPDATE sessoes s SET ultimo_uso = %(agora)s
-               FROM usuarios u
+               FROM usuarios u JOIN politicas p ON p.org_id = u.org_id
                WHERE s.token_hash = %(hash)s AND u.id = s.usuario_id
                  AND s.revogada_em IS NULL
                  AND s.expira_em > %(agora)s
-                 AND s.ultimo_uso > %(agora)s - %(ociosa)s
+                 AND s.ultimo_uso > %(agora)s - make_interval(mins => p.inatividade_min)
                  AND u.estado IN ('aceito', 'ativo')
-               RETURNING s.id, u.id, u.org_id, u.papel, u.estado""",
-            {"agora": agora, "hash": hash_token(token), "ociosa": OCIOSA},
+               RETURNING s.id, u.id, u.org_id, u.papel, u.estado, u.email::text,
+                         p.mfa_obrigatorio AND u.totp_ultimo_passo IS NULL""",
+            {"agora": agora, "hash": hash_token(token)},
         ).fetchone()
     if not linha:
         raise HTTPException(401, "nao_autenticado")
-    return Sessao(*linha)
+    sessao = Sessao(*linha)
+    # Calculado a cada requisição: ligar a política vale na hora para sessões já abertas.
+    if sessao.mfa_pendente and not _livre_sem_mfa(request.url.path):
+        raise HTTPException(403, "mfa_configuracao_requerida")
+    return sessao
 
 
 SessaoAtual = Annotated[Sessao, Depends(sessao_atual)]
@@ -150,3 +164,4 @@ def exigir_papel(*papeis: str):
 
 
 Gestor = Annotated[Sessao, Depends(exigir_papel("owner", "admin"))]
+Ativo = Annotated[Sessao, Depends(exigir_papel("owner", "admin", "member"))]

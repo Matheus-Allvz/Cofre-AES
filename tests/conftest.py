@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from psycopg import sql
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
-from app import cli, seguranca
+from app import cli, seguranca, totp
 from app import relogio as app_relogio
 from app.migrar import migrar
 
@@ -162,11 +162,56 @@ def aceitar_e_logar(c: TestClient, token: str, email: str) -> str:
     return auth
 
 
+def politica(banco, **campos):
+    """Altera a política da org direto no banco (como dono)."""
+    with psycopg.connect(banco["dono"]) as conn:
+        for campo, valor in campos.items():
+            conn.execute(
+                sql.SQL("UPDATE politicas SET {} = %s").format(sql.Identifier(campo)), (valor,)
+            )
+
+
+def codigo_totp(segredo: bytes, passos_adiante: int = 0) -> str:
+    """Código do passo atual do relógio da app (real ou o simulado da fixture `relogio`)."""
+    return totp.codigo(segredo, totp.passo_de(app_relogio.agora().timestamp()) + passos_adiante)
+
+
+def ativar_mfa(c: TestClient) -> tuple[bytes, list[str]]:
+    """iniciar + confirmar com o código do passo atual; devolve (segredo, códigos)."""
+    r = c.post("/api/v1/eu/mfa/iniciar", headers=H)
+    assert r.status_code == 200, r.text
+    b32 = r.json()["segredo_base32"]
+    segredo = base64.b32decode(b32 + "=" * (-len(b32) % 8))
+    r = c.post("/api/v1/eu/mfa/confirmar", json={"codigo": codigo_totp(segredo)}, headers=H)
+    assert r.status_code == 200, r.text
+    return segredo, r.json()["codigos_recuperacao"]
+
+
 @pytest.fixture
-def owner(cliente, org):
-    """Owner do bootstrap aceito e logado em `cliente`."""
+def owner(cliente, org, banco):
+    """Owner do bootstrap aceito e logado em `cliente`. Os testes da Fase 3 rodam sem MFA
+    obrigatório; a política padrão (MFA obrigatório) é coberta nos testes da Fase 4."""
+    politica(banco, mfa_obrigatorio=False)
     return {
         **org,
         "email": EMAIL_OWNER,
         "auth_hash": aceitar_e_logar(cliente, org["token"], EMAIL_OWNER),
     }
+
+
+@pytest.fixture
+def owner_mfa(cliente, org, relogio):
+    """Owner do bootstrap com a política padrão (MFA obrigatório) e TOTP ativado em `cliente`."""
+    auth = aceitar_e_logar(cliente, org["token"], EMAIL_OWNER)
+    segredo, codigos = ativar_mfa(cliente)
+    relogio.avancar(seconds=30)  # o passo usado na confirmação não vale de novo
+    return {**org, "email": EMAIL_OWNER, "auth_hash": auth, "segredo": segredo, "codigos": codigos}
+
+
+def login(c: TestClient, auth: str, email: str = EMAIL_OWNER, **extra):
+    return c.post("/api/v1/login", json={"email": email, "auth_hash": auth, **extra})
+
+
+def ler(banco, consulta: str, params=()):
+    with psycopg.connect(banco["dono"]) as conn:
+        return conn.execute(consulta, params).fetchall()
