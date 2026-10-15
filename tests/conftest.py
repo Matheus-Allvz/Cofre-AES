@@ -168,12 +168,12 @@ def convidar(c, email, papel="member"):
     return r.json() | {"token": r.json()["link"].removeprefix("/#/convite/")}
 
 
-def ativar(gestor: TestClient, novo_cliente, email: str, papel: str = "member") -> dict:
+def ativar(gestor: TestClient, novo_cliente, email: str, papel: str = "member", **aceite) -> dict:
     """Fluxo real da Fase 5: convite → aceite → login → o gestor confere o fingerprint da chave
     pública que o membro enviou. Devolve {cliente, auth_hash, id, chave_publica}."""
     convite = convidar(gestor, email, papel)
     c, auth, pub = novo_cliente(), b64u(32), b64u(32)
-    aceite = payload_aceite(convite["token"], auth, chave_publica=pub)
+    aceite = payload_aceite(convite["token"], auth, chave_publica=pub, **aceite)
     assert c.post("/api/v1/convites/aceitar", json=aceite).status_code == 201
     assert c.post("/api/v1/login", json={"email": email, "auth_hash": auth}).status_code == 200
     fp = seguranca.fingerprint(seguranca.de_b64u(pub))
