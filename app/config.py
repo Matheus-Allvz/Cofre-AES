@@ -18,10 +18,15 @@ def carregar() -> Config:
         raise RuntimeError("COFRE_SEGREDO ausente ou não é base64") from e
     if len(segredo) != 32:
         raise RuntimeError("COFRE_SEGREDO deve ter 32 bytes")
+    cookie_secure = os.environ.get("COOKIE_SECURE", "true").strip().lower() != "false"
+    # 32 bytes aleatórios têm ~30 valores distintos; < 16 = zeros, padrão repetido ou
+    # o valor fictício do .env.exemplo. Só aceito em dev local (COOKIE_SECURE=false).
+    if cookie_secure and len(set(segredo)) < 16:
+        raise RuntimeError("COFRE_SEGREDO fraco ou de exemplo: gere com openssl rand -base64 32")
     return Config(
         database_url=os.environ["DATABASE_URL"],
         cofre_segredo=segredo,
-        cookie_secure=os.environ.get("COOKIE_SECURE", "true").strip().lower() != "false",
+        cookie_secure=cookie_secure,
     )
 
 

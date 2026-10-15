@@ -39,12 +39,16 @@ services:
       DATABASE_URL: postgresql://cofre_app:${APP_DB_PASSWORD}@db:5432/cofre
       COFRE_SEGREDO: ${COFRE_SEGREDO:?defina COFRE_SEGREDO no .env}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      COFRE_ARGON2_CONCORRENCIA: ${COFRE_ARGON2_CONCORRENCIA:-2}
     ports:
       - "127.0.0.1:8098:8000"
     depends_on:
       migrar:
         condition: service_completed_successfully
-    mem_limit: 256m
+    # Memória: ~60 MiB do processo + COFRE_ARGON2_CONCORRENCIA × 64 MiB do Argon2 (m=65536)
+    # = ~190 MiB com 2 (pico medido: 185 MiB com 60 logins paralelos). 384m = ~2× de folga.
+    # Subir a concorrência exige subir este limite na mesma conta.
+    mem_limit: 384m
 
 volumes:
   dados:

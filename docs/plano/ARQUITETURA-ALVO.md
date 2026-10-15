@@ -18,7 +18,7 @@ Marcação: **[CONFIRMAR]** = o construtor confirma antes de fixar (fonte oficia
 | D5 | Autenticação | Estilo Bitwarden: `authHash` derivado da masterKey vai ao servidor; servidor guarda `Argon2id(HMAC(pepper, authHash))`. | OPAQUE | Sem biblioteca madura nas duas pontas; ganho pequeno porque o servidor serve o JS. Backlog. |
 | D6 | KDF cliente | **Só Argon2id** (`hash-wasm`, vendorizado), m=65536 KiB, t=3, p=1, 32 B. Parâmetros gravados por usuário. | Fallback PBKDF2 600k | WASM é universal nos browsers-alvo; dois caminhos = dobro de teste e um elo fraco. Coluna `kdf` jsonb permite trocar no futuro. |
 | D7 | KDF em Worker | **Não** no MVP: roda na thread principal após um `await` de 50 ms para pintar o "Derivando chave…". | Web Worker | Worker sob Trusted Types exige policy para `new Worker`/`importScripts`; custo ~1 s, uma vez por login. Backlog. |
-| D8 | Assimétrico | **X25519** (WebCrypto) + HKDF-SHA256 + AES-256-GCM (estilo HPKE base). Navegador sem X25519 → tela "navegador não suportado". | RSA-OAEP-3072 | Um algoritmo só; Chrome ≥133, Firefox ≥130, Safari 18.x **[CONFIRMAR no MDN]**. Node ≥22 suporta para testes. |
+| D8 | Assimétrico | **X25519** (WebCrypto) + HKDF-SHA256 + AES-256-GCM (estilo HPKE base). Navegador sem X25519 → tela "navegador não suportado". | RSA-OAEP-3072 | Um algoritmo só; Chrome ≥133, Firefox ≥130, Safari ≥17 (confirmado no MDN browser-compat-data, Fase 2). Node ≥22 suporta para testes. |
 | D9 | Assinaturas | Sem Ed25519 no MVP. Autenticidade de chave pública por fingerprint verificado fora de banda. | Ed25519 por item/manifesto | Complexidade alta; limitação documentada (quem tem a collectionKey pode forjar blob). Backlog. |
 | D10 | Chave por item | **Sem itemKey.** Itens cifrados direto com a collectionKey. Rotação recifra itens e versões no cliente. | itemKey por item | Escala alvo (≤ alguns milhares de itens/coleção) torna a recifragem barata; menos um nível de envelope. |
 | D11 | Item dividido | Cada item tem `meta_cif` (título, usuário, URLs) e `segredo_cif` (senha/notas/valor). Listagem só entrega `meta_cif`; `segredo_cif` só sai por rota auditada. | Blob único | Torna "revelar" auditável no servidor (RF-A02/A03) mesmo em zero-knowledge e viabiliza a permissão `ver_sem_revelar` contra servidor honesto. |
@@ -47,8 +47,8 @@ senha-mestra ──NFKC──> Argon2id(sal 16B, m=65536, t=3, p=1) ──> mast
 
 kek ──AES-GCM──> userKey (32 B aleatória)                      [usuarios.chave_usuario_cif]
 recoveryKey (32 B aleatória, kit impresso)
-  ──HKDF(info="cofre-emp/v1/recup-kek")──> recupKek ──AES-GCM──> userKey [usuarios.chave_usuario_recup_cif]
-  ──HKDF(info="cofre-emp/v1/recup-auth")─> recupAuth ──> servidor guarda HMAC(pepper, recupAuth)
+  ──HKDF-SHA256(salt=vazio, info="cofre-emp/v1/recup-kek")──> recupKek ──AES-GCM──> userKey [usuarios.chave_usuario_recup_cif]
+  ──HKDF-SHA256(salt=vazio, info="cofre-emp/v1/recup-auth")─> recupAuth ──> servidor guarda HMAC(pepper, recupAuth)
 userKey ──AES-GCM──> chave privada X25519 (PKCS8)              [usuarios.chave_privada_cif]
 chave pública X25519 (raw 32 B)                                [usuarios.chave_publica, em claro]
 
@@ -58,6 +58,7 @@ collectionKey (32 B aleatória por coleção, versionada chave_ver)
 ```
 
 Regras:
+- Todo HKDF desta hierarquia (auth, kek, recup-kek, recup-auth) usa `salt` **vazio** (0 bytes; no WebCrypto, `new Uint8Array(0)`). O único HKDF com salt é o do envelope x1 (§3.2).
 - Toda chave AES importada com `extractable: false`, exceto a userKey e a collectionKey quando precisam ser re-envelopadas (troca de senha, compartilhamento, rotação). Nada vai a `localStorage`/`sessionStorage`/IndexedDB/cookie.
 - IV sempre de `crypto.getRandomValues` (12 B). AAD sempre reconstruído pelo cliente a partir de ids que ele já conhece; nunca lido do servidor como string pronta.
 - Troca de senha-mestra re-envelopa só a userKey. Recuperação re-envelopa a userKey e gera **novo** kit.
@@ -118,13 +119,13 @@ Regex: `^x1\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{22,}$`.
 
 ## 4. Esquema de dados alvo (Postgres 16)
 
-Extensões: `citext`. `*_cif` = envelope texto (`v1`/`x1`). Todas as tabelas de negócio têm `org_id` (direto ou via FK obrigatória).
+Extensões: `citext`. `*_cif` = envelope texto (`v1`/`x1`). Todas as tabelas de negócio têm `org_id` (direto ou via FK obrigatória), exceto `eventos`, cujo `org_id` é **nullable** (evento sem organização identificável, ex.: login falho de e-mail inexistente). `limites` é infraestrutura de rate limit, sem `org_id`.
 
 | Tabela | Colunas (resumo) | Fase |
 |---|---|---|
 | `schema_migracoes` | `versao text pk, sha256 text, aplicada_em` | 1 |
 | `organizacoes` | `id uuid pk, nome text, criada_em` | 1 |
-| `eventos` | `id bigserial pk, em timestamptz, org_id, ator_id uuid null, tipo text, alvo_tipo text, alvo_id text, resultado text ('ok'/'falha'), ip inet, user_agent text, meta jsonb` — trigger `BEFORE UPDATE OR DELETE` → `RAISE`; `cofre_app` só `INSERT, SELECT` | 1 |
+| `eventos` | `id bigserial pk, em timestamptz, org_id null, ator_id uuid null, tipo text, alvo_tipo text, alvo_id text, resultado text ('ok'/'falha'), ip inet, user_agent text, meta jsonb` — trigger `BEFORE UPDATE OR DELETE` → `RAISE`; `cofre_app` só `INSERT, SELECT` | 1 |
 | `limites` | `chave text pk ('conta:<sha256 email>' / 'ip:<ip>:<rota>'), falhas int, janela_inicio, bloqueado_ate` | 3 |
 | `usuarios` | `id uuid pk, org_id, email citext unique, nome text, papel text check(owner/admin/member), estado text check(convidado/aceito/ativo/suspenso/removido), kdf jsonb, kdf_sal bytea, auth_hash text, chave_usuario_cif, chave_usuario_recup_cif, recup_auth_hmac bytea, chave_publica bytea, chave_privada_cif, fingerprint_confirmado text, confirmado_por uuid, totp_segredo_cif text, totp_ultimo_passo bigint, criado_em, atualizado_em` | 3 (TOTP em 4) |
 | `convites` | `id uuid pk, org_id, usuario_id uuid fk, token_hash bytea unique, papel, criado_por, expira_em, usado_em, revogado_em` | 3 |
