@@ -65,3 +65,44 @@ riscos residuais conhecidos e as decisões que os aceitam.
 - Segredo TOTP adulterado ou trocado entre usuários (AAD com o id) falha fechado: 401
   `mfa_invalido` e evento `auth.mfa` falha (`meta.metodo = totp_segredo_invalido`).
 - Sem senha-mestra e sem kit, o acesso pessoal é perdido (D18).
+
+## Coleções e itens (Fase 6)
+
+- **Zero-knowledge.** Nome de coleção, meta e segredo de item chegam como envelopes `v1`
+  cifrados no navegador com a collectionKey; a collectionKey chega como envelope `x1` por
+  membro. O servidor confere formato (regex de §3.1/§3.2), tamanho (64 KiB por blob, `422
+  blob_grande`), permissão e versões, e nunca decifra nada. O AAD amarra cada blob a org,
+  coleção, item, `chave_ver` e `versao`: blob movido de item ou de versão não decifra.
+- **Autorização.** Sem envelope na coleção = `404 nao_encontrado` em toda rota dela, com os
+  mesmos bytes de um id inexistente (inclusive para item de outra coleção ou de outra org).
+  Com envelope e nível abaixo do mínimo: `403 sem_permissao`. Toda rota relê o estado do
+  usuário (`FOR SHARE`) e o envelope (`FOR SHARE`) na transação que grava/entrega: uma
+  suspensão em andamento faz a requisição esperar e terminar em `401`, sem efeito.
+- **Revelar é auditado (RF-A02/A03).** `segredo_cif` só sai por `GET /itens/{id}/segredo` e
+  `GET /itens/{id}/versoes/{v}`, com o evento gravado na mesma transação: se o evento falhar,
+  nada é entregue (500). `sync` e lixeira nunca trazem `segredo_cif`.
+- **Copiar é melhor esforço.** `POST /itens/{id}/copiado` é o cliente avisando; quem já
+  revelou o segredo pode copiá-lo sem avisar. A limpeza do clipboard em 30 s também é melhor
+  esforço (o navegador pode negar a leitura; outro app pode ter guardado o conteúdo).
+- **Histórico.** As 10 versões anteriores mais recentes ficam em `item_versoes` (autor e data
+  de cada uma). `PUT` exige `If-Match` com a versão atual (`428`/`409 conflito_versao`).
+- **Lixeira.** 30 dias. A purga é preguiçosa: acontece no `sync` de quem tem envelope na
+  coleção (evento `item.purgado`, `meta.modo = automatico`); apagar definitivo grava o mesmo
+  tipo com `meta.modo = manual`. Item vencido de coleção que ninguém sincroniza fica no banco
+  até alguém sincronizar.
+
+### Limitações aceitas (RF-O05)
+
+- **`ver_sem_revelar` não protege contra quem usa a credencial.** A permissão impede que o
+  servidor entregue o segredo à pessoa, mas o item continua sendo usado por ela (ex.: login
+  preenchido por outra ferramenta, pessoa que vê a tela de quem revelou). É controle de
+  exposição contra servidor honesto, não sigilo contra o membro: quem tem `ver_sem_revelar`
+  tem a collectionKey e decifra o `segredo_cif` que obtiver por outro caminho (backup vazado,
+  servidor desonesto).
+- **Quem tem a collectionKey pode forjar blob.** Qualquer membro (mesmo `ver_sem_revelar`)
+  recebe a collectionKey para ler os metadados; com ela consegue cifrar um item válido. O
+  servidor só barra a **gravação** por permissão; sem assinatura (D9), um servidor malicioso
+  ou um membro com a chave e acesso ao banco forja conteúdo que decifra normalmente.
+- **Rollback para blob antigo legítimo não é detectado** (o AAD impede trocar de contexto, não
+  voltar a uma versão anterior do mesmo contexto). Manifesto assinado fica no backlog.
+- **`sync` sem paginação**: dimensionado para alguns milhares de itens por usuário.
