@@ -18,3 +18,5 @@ ignore = ["S101"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# Pool/thread não encerrado vira erro, não aviso perdido no fim da saída.
+filterwarnings = ["error::pytest.PytestUnraisableExceptionWarning"]

@@ -60,8 +60,9 @@ def test_erro_com_codigo_e_erro_interno(cliente):
 
         from fastapi.testclient import TestClient
 
-        with TestClient(app, raise_server_exceptions=False) as c:
-            r = c.get("/api/teste-erros/boom")
+        # Sem `with`: um segundo lifespan trocaria app.state.pool e o pool da fixture ficaria
+        # sem close(); o GC o recolhia numa thread do próprio pool ("cannot join current thread").
+        r = TestClient(app, raise_server_exceptions=False).get("/api/teste-erros/boom")
         assert r.status_code == 500
         assert r.json() == {"erro": "interno"}
         assert r.headers["cache-control"] == "no-store"
