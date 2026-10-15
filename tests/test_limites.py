@@ -3,6 +3,7 @@
 import hashlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 
 import psycopg
 import pytest
@@ -99,3 +100,23 @@ def test_limite_de_ip_atomico_com_threads(cliente):
 
     pool = app.state.pool
     assert _em_paralelo(lambda: limites.contar_ip(pool, "192.0.2.1", "login")) == 20
+
+
+def test_login_purga_limites_vencidos(cliente, owner, banco, relogio):
+    """Herdado: entradas sem efeito somem no login com sucesso; bloqueio vigente fica."""
+    agora = relogio.agora
+    linhas = [
+        ("ip:198.51.100.1:login", 5, agora - timedelta(minutes=16), None),  # janela velha
+        ("conta:velha", 3, agora - timedelta(minutes=20), None),
+        ("conta:bloqueio-vencido", 11, agora - timedelta(minutes=40), agora - timedelta(minutes=1)),
+        ("conta:bloqueada", 11, agora - timedelta(minutes=20), agora + timedelta(minutes=5)),
+        ("ip:198.51.100.2:login", 1, agora - timedelta(seconds=10), None),  # janela atual
+    ]
+    with psycopg.connect(banco["dono"]) as conn:
+        with conn.cursor() as cur:
+            cur.executemany("INSERT INTO limites VALUES (%s, %s, %s, %s)", linhas)
+    assert _login(cliente, EMAIL_OWNER, owner["auth_hash"]).status_code == 200
+    with psycopg.connect(banco["dono"]) as conn:
+        chaves = {c for (c,) in conn.execute("SELECT chave FROM limites")}
+    assert "conta:bloqueada" in chaves and "ip:198.51.100.2:login" in chaves
+    assert not chaves & {"ip:198.51.100.1:login", "conta:velha", "conta:bloqueio-vencido"}

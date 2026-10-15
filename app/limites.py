@@ -88,5 +88,15 @@ def tentar_conta(pool, email: str, ao_bloquear=None) -> None:
 
 
 def limpar_conta(pool, email: str) -> None:
+    """Zera a conta após credencial válida e purga o que já não vale nada (sem job externo).
+
+    Linha sem bloqueio vigente e com janela iniciada há mais de 15 min (a maior janela, a da
+    conta) é recriada do zero na próxima tentativa: apagar não muda nenhuma regra.
+    """
+    agora = relogio.agora()
     with db.transacao(pool) as conn:
-        conn.execute("DELETE FROM limites WHERE chave = %s", (chave_conta(email),))
+        conn.execute(
+            """DELETE FROM limites WHERE chave = %s
+                  OR (janela_inicio <= %s AND (bloqueado_ate IS NULL OR bloqueado_ate <= %s))""",
+            (chave_conta(email), agora - CONTA_BLOQUEIO, agora),
+        )
