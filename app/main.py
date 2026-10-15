@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from psycopg_pool import PoolTimeout
 
 from app import config, db, erros, logs
-from app.rotas import auth, conta, convites, org
+from app.rotas import auth, conta, convites, membros, org
 
 logs.configurar()
 log = logging.getLogger("cofre.http")
@@ -29,6 +29,7 @@ app.include_router(auth.rota, prefix="/api/v1")
 app.include_router(convites.rota, prefix="/api/v1")
 app.include_router(conta.rota, prefix="/api/v1")
 app.include_router(org.rota, prefix="/api/v1")
+app.include_router(membros.rota, prefix="/api/v1")
 
 
 @app.middleware("http")
@@ -59,6 +60,6 @@ def pronto(request: Request):
     try:
         with request.app.state.pool.connection(timeout=2) as conn:
             conn.execute("SELECT 1")
-    except psycopg.Error, PoolTimeout:
+    except (psycopg.Error, PoolTimeout):
         return JSONResponse({"erro": "banco_indisponivel"}, status_code=503)
     return {"status": "ok"}
