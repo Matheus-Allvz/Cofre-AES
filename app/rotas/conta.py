@@ -78,6 +78,8 @@ def mfa_confirmar(dados: Codigo, request: Request, sessao: seguranca.SessaoAtual
     passo = chave and totp.verificar(chave, dados.codigo, relogio.agora().timestamp(), None)
     codigos = None
     with db.transacao(pool) as conn:
+        # Suspensão/remoção durante a verificação: nada de TOTP nem códigos para a conta.
+        seguranca.exigir_sessao_viva(conn, sessao)
         # Atômico: o segredo confirmado é o que foi lido (um iniciar paralelo não passa).
         if (
             passo is not None

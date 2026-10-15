@@ -6,10 +6,27 @@ suspensão/remoção é commitada pela rota real depois da verificação e antes
 Sem a releitura `FOR SHARE` do estado, a sessão/token nasceria e "reviveria" ao reativar.
 """
 
-import pytest
-from conftest import KDF, H, ativar, ativar_mfa, b64u, codigo_totp, env_v1, ler, login
+import base64
+import threading
 
-from app import mfa, seguranca
+import psycopg
+import pytest
+from conftest import (
+    KDF,
+    H,
+    ativar,
+    ativar_mfa,
+    b64u,
+    codigo_totp,
+    convidar,
+    env_v1,
+    esperar_trava,
+    ler,
+    login,
+    payload_aceite,
+)
+
+from app import mfa, seguranca, totp
 
 M = "/api/v1/membros"
 
@@ -126,3 +143,28 @@ def test_desativar_mfa_durante_suspensao_nao_grava(
     assert (r.status_code, r.json()) == (401, {"erro": "nao_autenticado"})
     sql = "SELECT totp_ultimo_passo IS NOT NULL FROM usuarios WHERE id = %s"
     assert ler(banco, sql, (m["id"],)) == [(True,)]
+
+
+def test_confirmar_mfa_durante_suspensao_nao_grava(
+    cliente, owner, novo_cliente, banco, monkeypatch
+):
+    """Herdado da Fase 5: a suspensão entra entre a verificação do código e a gravação."""
+    m = ativar(cliente, novo_cliente, "conf@t.invalid")
+    b32 = m["cliente"].post("/api/v1/eu/mfa/iniciar", headers=H).json()["segredo_base32"]
+    segredo = base64.b32decode(b32 + "=" * (-len(b32) % 8))
+    feito = _durante(
+        monkeypatch,
+        totp,
+        "verificar",
+        lambda: cliente.post(f"{M}/{m['id']}/suspender", headers=H).status_code,
+    )
+    r = m["cliente"].post(
+        "/api/v1/eu/mfa/confirmar", json={"codigo": codigo_totp(segredo)}, headers=H
+    )
+    assert feito == [200]
+    assert (r.status_code, r.json()) == (401, {"erro": "nao_autenticado"})
+    sql = "SELECT totp_ultimo_passo IS NULL FROM usuarios WHERE id = %s"
+    assert ler(banco, sql, (m["id"],)) == [(True,)]
+    sql = "SELECT count(*) FROM codigos_mfa WHERE usuario_id = %s"
+    assert ler(banco, sql, (m["id"],)) == [(0,)]
+
