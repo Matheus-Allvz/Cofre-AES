@@ -211,8 +211,8 @@ def ativar_mfa(c: TestClient) -> tuple[bytes, list[str]]:
 
 @pytest.fixture
 def owner(cliente, org, banco):
-    """Owner do bootstrap aceito e logado em `cliente`. Os testes da Fase 3 rodam sem MFA
-    obrigatório; a política padrão (MFA obrigatório) é coberta nos testes da Fase 4."""
+    """Owner do bootstrap aceito e logado em `cliente`, sem MFA obrigatório (o padrão desde a
+    Fase 7); MFA obrigatório é coberto nos testes da Fase 4 (politica(..., True))."""
     politica(banco, mfa_obrigatorio=False)
     return {
         **org,
@@ -222,8 +222,10 @@ def owner(cliente, org, banco):
 
 
 @pytest.fixture
-def owner_mfa(cliente, org, relogio):
-    """Owner do bootstrap com a política padrão (MFA obrigatório) e TOTP ativado em `cliente`."""
+def owner_mfa(cliente, org, relogio, banco):
+    """Owner do bootstrap com política de MFA obrigatório (o padrão é opcional desde a Fase 7)
+    e TOTP ativado em `cliente`."""
+    politica(banco, mfa_obrigatorio=True)
     auth = aceitar_e_logar(cliente, org["token"], EMAIL_OWNER)
     segredo, codigos = ativar_mfa(cliente)
     relogio.avancar(seconds=30)  # o passo usado na confirmação não vale de novo

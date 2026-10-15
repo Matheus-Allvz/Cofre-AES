@@ -24,8 +24,10 @@ from app.rotas.auth import SQL_USUARIO
 V1 = re.compile(r"^v1\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{22,}$")
 
 
-def test_pendente_so_acessa_eu_mfa_e_logout_ate_confirmar(cliente, org, relogio):
-    """DoD 4 / RF-I04: política padrão + usuário sem MFA → login 200 com mfa_pendente."""
+def test_pendente_so_acessa_eu_mfa_e_logout_ate_confirmar(cliente, org, relogio, banco):
+    """DoD 4 / RF-I04: política com MFA obrigatório + usuário sem MFA → login 200 com
+    mfa_pendente (o padrão é opcional desde a Fase 7)."""
+    politica(banco, mfa_obrigatorio=True)
     auth = aceitar_e_logar(cliente, org["token"], EMAIL_OWNER)
     r = login(cliente, auth)
     assert r.status_code == 200 and r.json()["mfa_pendente"] is True
