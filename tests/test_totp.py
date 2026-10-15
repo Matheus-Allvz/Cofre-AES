@@ -74,3 +74,9 @@ def test_cifra_servidor_v1_com_aad_do_usuario():
         cifra_servidor.decifrar(servidor, "u2", env)  # envelope de outro usuário não abre
     with pytest.raises(InvalidTag):
         cifra_servidor.decifrar(bytes(32), "u1", env)
+
+
+def test_instante_no_primeiro_passo_nao_quebra():
+    # Passo -1 (instante < 30 s) não existe: é ignorado em vez de estourar no struct.
+    assert totp.verificar(RFC_SEGREDO, totp.codigo(RFC_SEGREDO, 0), 10, None) == 0
+    assert totp.verificar(RFC_SEGREDO, "000000", 10, None) is None

@@ -31,8 +31,10 @@ def verificar(
         return None
     atual = passo_de(instante)
     for passo in (atual - 1, atual, atual + 1):
-        if (ultimo is None or passo > ultimo) and hmac.compare_digest(
-            codigo(segredo, passo), digitado
+        if (
+            passo >= 0
+            and (ultimo is None or passo > ultimo)
+            and hmac.compare_digest(codigo(segredo, passo), digitado)
         ):
             return passo
     return None
