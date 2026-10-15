@@ -1,7 +1,10 @@
 """Coleções e itens (§5.4, Fase 6): sync, coleções, itens, revelar auditado, histórico, lixeira.
 
-Membros de coleção (POST/PUT/DELETE) e rotação são da Fase 7. O servidor só guarda envelopes
-opacos: confere formato, tamanho, permissão e versões; nunca decifra nada.
+Fase 7: membros de coleção (POST/PUT/DELETE) e rotação da collectionKey. O servidor só guarda
+envelopes opacos: confere formato, tamanho, permissão e versões; nunca decifra nada.
+
+Ordem de travas (todas as rotas): trava consultiva `membros:<org>` (quando há) → usuarios →
+colecoes → itens. Rotas de item travam a coleção antes do item para não cruzar com a rotação.
 
 Toda rota abre UMA transação que (1) relê o estado do usuário FOR SHARE (suspender/remover
 travam a mesma linha FOR UPDATE), (2) lê o envelope do usuário na coleção FOR SHARE e só então
@@ -64,6 +67,46 @@ class NovoItem(Entrada):
     segredo_cif: Blob
 
 
+class NovoMembro(Entrada):
+    usuario_id: UUID
+    permissao: Permissao
+    chave_ver: int = Field(ge=1)
+    chave_colecao_cif: X1
+
+
+class NovaPermissao(Entrada):
+    permissao: Permissao
+
+
+class EnvelopeRotacao(Entrada):
+    usuario_id: UUID
+    chave_colecao_cif: X1
+
+
+class ItemRotacao(Entrada):
+    id: UUID
+    versao: int = Field(ge=1)
+    meta_cif: Blob
+    segredo_cif: Blob
+
+
+class VersaoRotacao(Entrada):
+    item_id: UUID
+    versao: int = Field(ge=1)
+    meta_cif: Blob
+    segredo_cif: Blob
+
+
+class Rotacao(Entrada):
+    """Coleção inteira recifrada com a chave nova (corpo até 20 MiB, ver app.main)."""
+
+    chave_ver_atual: int = Field(ge=1)
+    nome_cif: Blob
+    envelopes: list[EnvelopeRotacao] = Field(min_length=1, max_length=1000)
+    itens: list[ItemRotacao] = Field(max_length=50_000)
+    versoes: list[VersaoRotacao] = Field(max_length=500_000)
+
+
 class Edicao(Entrada):
     chave_ver: int = Field(ge=1)
     meta_cif: Blob
@@ -112,7 +155,7 @@ SQL_COLECAO_LER = _SQL_COLECAO + " FOR SHARE OF c, cm"
 SQL_COLECAO_GRAVAR = _SQL_COLECAO + " FOR UPDATE OF c FOR SHARE OF cm"
 
 _SQL_ITEM = """SELECT i.id, i.colecao_id, i.versao, i.excluido_em, i.segredo_cif,
-           c.chave_ver, cm.permissao
+           i.chave_ver, c.chave_ver AS colecao_chave_ver, cm.permissao
     FROM itens i JOIN colecoes c ON c.id = i.colecao_id
     JOIN colecao_membros cm ON cm.colecao_id = c.id AND cm.usuario_id = %s
     WHERE i.id = %s AND c.org_id = %s"""
@@ -125,6 +168,13 @@ def _colecao(conn, sessao, colecao_id, minimo, sql=SQL_COLECAO_LER) -> dict:
 
 
 def _item(conn, sessao, item_id, minimo, sql=SQL_ITEM_LER) -> dict:
+    # Coleção antes do item (mesma ordem da rotação, que trava a coleção e depois os itens):
+    # numa consulta só o item podia ser travado primeiro e a rotação e esta rota se travariam.
+    conn.execute(
+        """SELECT 1 FROM colecoes c JOIN itens i ON i.colecao_id = c.id
+           WHERE i.id = %s AND c.org_id = %s FOR SHARE OF c""",
+        (item_id, sessao.org_id),
+    )
     return _exigir(db.linha(conn, sql, (sessao.usuario_id, item_id, sessao.org_id)), minimo)
 
 
@@ -295,6 +345,245 @@ def lixeira(colecao_id: UUID, request: Request, sessao: seguranca.Ativo):
         )
 
 
+# ---------- membros da coleção (Fase 7) ----------
+
+
+def trava_membros(conn, org_id) -> None:
+    """Mesma trava consultiva da gestão de membros da org: estado/papel dos usuários e o
+    conjunto de envelopes não mudam por baixo de quem dá ou tira acesso."""
+    conn.execute("SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))", (f"membros:{org_id}",))
+
+
+@contextmanager
+def _gestao(request: Request, sessao, colecao_id) -> Iterator:
+    with db.transacao(request.app.state.pool) as conn:
+        trava_membros(conn, sessao.org_id)
+        seguranca.exigir_sessao_viva(conn, sessao, ("ativo",))
+        yield conn, _colecao(conn, sessao, colecao_id, "gerenciar", SQL_COLECAO_GRAVAR)
+
+
+def _membro(conn, colecao_id, usuario_id) -> dict:
+    m = db.linha(
+        conn,
+        """SELECT cm.permissao, u.papel FROM colecao_membros cm
+           JOIN usuarios u ON u.id = cm.usuario_id
+           WHERE cm.colecao_id = %s AND cm.usuario_id = %s FOR UPDATE OF cm""",
+        (colecao_id, usuario_id),
+    )
+    if m is None:
+        raise HTTPException(404, "nao_encontrado")
+    return m
+
+
+def _sobra_gerente(conn, colecao_id, usuario_id) -> None:
+    (outros,) = conn.execute(
+        """SELECT count(*) FROM colecao_membros
+           WHERE colecao_id = %s AND permissao = 'gerenciar' AND usuario_id <> %s""",
+        (colecao_id, usuario_id),
+    ).fetchone()
+    if outros == 0:
+        raise HTTPException(409, "ultimo_gerente")
+
+
+@rota.post("/colecoes/{colecao_id}/membros", status_code=201)
+def adicionar_membro(
+    colecao_id: UUID, dados: NovoMembro, request: Request, sessao: seguranca.Ativo
+):
+    """Envelope x1 novo para um usuário ATIVO da org (fingerprint já confirmado)."""
+    with _gestao(request, sessao, colecao_id) as (conn, c):
+        if dados.chave_ver != c["chave_ver"]:
+            raise HTTPException(409, "chave_ver_desatualizada")
+        if not conn.execute(
+            "SELECT 1 FROM usuarios WHERE id = %s AND org_id = %s AND estado = 'ativo'",
+            (dados.usuario_id, sessao.org_id),
+        ).fetchone():
+            raise HTTPException(422, "destinatario_invalido")
+        if not conn.execute(
+            """INSERT INTO colecao_membros
+                 (colecao_id, usuario_id, permissao, chave_ver, chave_colecao_cif)
+               VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING RETURNING 1""",
+            (
+                colecao_id,
+                dados.usuario_id,
+                dados.permissao,
+                c["chave_ver"],
+                dados.chave_colecao_cif,
+            ),
+        ).fetchone():
+            raise HTTPException(409, "ja_membro")
+        _evento(
+            conn,
+            request,
+            sessao,
+            "colecao.membro_adicionado",
+            "colecao",
+            colecao_id,
+            {"usuario_id": str(dados.usuario_id), "permissao": dados.permissao},
+        )
+    return {
+        "usuario_id": dados.usuario_id,
+        "permissao": dados.permissao,
+        "chave_ver": c["chave_ver"],
+    }
+
+
+@rota.put("/colecoes/{colecao_id}/membros/{usuario_id}")
+def alterar_permissao(
+    colecao_id: UUID,
+    usuario_id: UUID,
+    dados: NovaPermissao,
+    request: Request,
+    sessao: seguranca.Ativo,
+):
+    """Owner fica sempre com `gerenciar` (D13); a coleção nunca fica sem quem a gerencie."""
+    with _gestao(request, sessao, colecao_id) as (conn, _):
+        m = _membro(conn, colecao_id, usuario_id)
+        if m["permissao"] == dados.permissao:
+            return {"usuario_id": usuario_id, "permissao": dados.permissao}
+        if m["papel"] == "owner":
+            raise HTTPException(409, "owner_gerencia")
+        if m["permissao"] == "gerenciar":
+            _sobra_gerente(conn, colecao_id, usuario_id)
+        conn.execute(
+            "UPDATE colecao_membros SET permissao = %s WHERE colecao_id = %s AND usuario_id = %s",
+            (dados.permissao, colecao_id, usuario_id),
+        )
+        _evento(
+            conn,
+            request,
+            sessao,
+            "colecao.permissao_alterada",
+            "colecao",
+            colecao_id,
+            {"usuario_id": str(usuario_id), "antes": m["permissao"], "depois": dados.permissao},
+        )
+    return {"usuario_id": usuario_id, "permissao": dados.permissao}
+
+
+def marcar_rotacao(conn, colecoes: list) -> None:
+    """RF-U04: quem saiu tinha a collectionKey e viu os segredos: a coleção pede rotação da
+    chave e todo item (inclusive lixeira) pede troca da senha no sistema de origem."""
+    conn.execute("UPDATE colecoes SET rotacao_pendente = true WHERE id = ANY(%s)", (colecoes,))
+    conn.execute(
+        "UPDATE itens SET rotacao_senha_pendente = true WHERE colecao_id = ANY(%s)", (colecoes,)
+    )
+
+
+@rota.delete("/colecoes/{colecao_id}/membros/{usuario_id}", status_code=204)
+def remover_membro(colecao_id: UUID, usuario_id: UUID, request: Request, sessao: seguranca.Ativo):
+    with _gestao(request, sessao, colecao_id) as (conn, _):
+        m = _membro(conn, colecao_id, usuario_id)
+        if m["papel"] == "owner":
+            raise HTTPException(409, "owner_gerencia")
+        if m["permissao"] == "gerenciar":
+            _sobra_gerente(conn, colecao_id, usuario_id)
+        conn.execute(
+            "DELETE FROM colecao_membros WHERE colecao_id = %s AND usuario_id = %s",
+            (colecao_id, usuario_id),
+        )
+        marcar_rotacao(conn, [colecao_id])
+        _evento(
+            conn,
+            request,
+            sessao,
+            "colecao.membro_removido",
+            "colecao",
+            colecao_id,
+            {"usuario_id": str(usuario_id)},
+        )
+    return Response(status_code=204)
+
+
+@rota.post("/colecoes/{colecao_id}/rotacionar")
+def rotacionar(colecao_id: UUID, dados: Rotacao, request: Request, sessao: seguranca.Ativo):
+    """Troca atômica da collectionKey (§2, RF-U04). Uma transação: coleção FOR UPDATE, itens
+    FOR UPDATE e TODAS as validações antes de qualquer escrita. O cliente manda exatamente os
+    membros atuais, todos os itens (inclusive lixeira) na versão atual e todas as versões
+    guardadas; tudo vai para chave_ver+1 e a coleção sai de rotacao_pendente."""
+    _tamanho(
+        dados.nome_cif,
+        *(b for i in dados.itens for b in (i.meta_cif, i.segredo_cif)),
+        *(b for v in dados.versoes for b in (v.meta_cif, v.segredo_cif)),
+    )
+    envelopes = {e.usuario_id: e.chave_colecao_cif for e in dados.envelopes}
+    itens = {i.id: i for i in dados.itens}
+    versoes = {(v.item_id, v.versao): v for v in dados.versoes}
+    if (len(envelopes), len(itens), len(versoes)) != (
+        len(dados.envelopes),
+        len(dados.itens),
+        len(dados.versoes),
+    ):
+        raise HTTPException(422, "rotacao_incompleta")  # repetido também não fecha o conjunto
+    with _transacao(request, sessao) as conn:
+        c = _colecao(conn, sessao, colecao_id, "gerenciar", SQL_COLECAO_GRAVAR)
+        if dados.chave_ver_atual != c["chave_ver"]:
+            raise HTTPException(409, "chave_ver_desatualizada")
+        membros = {
+            u
+            for (u,) in conn.execute(
+                "SELECT usuario_id FROM colecao_membros WHERE colecao_id = %s", (colecao_id,)
+            )
+        }
+        atuais = dict(
+            conn.execute(
+                "SELECT id, versao FROM itens WHERE colecao_id = %s ORDER BY id FOR UPDATE",
+                (colecao_id,),
+            ).fetchall()
+        )
+        guardadas = set(
+            conn.execute(
+                """SELECT v.item_id, v.versao FROM item_versoes v JOIN itens i ON i.id = v.item_id
+                   WHERE i.colecao_id = %s""",
+                (colecao_id,),
+            ).fetchall()
+        )
+        if set(envelopes) != membros or set(itens) != set(atuais):
+            raise HTTPException(422, "rotacao_incompleta")
+        # Item editado depois que o cliente montou a rotação: 409 (ele re-sincroniza e refaz),
+        # antes de comparar as versões, que também mudaram com a edição.
+        if any(itens[i].versao != v for i, v in atuais.items()):
+            raise HTTPException(409, "conflito_versao")
+        if set(versoes) != guardadas:
+            raise HTTPException(422, "rotacao_incompleta")
+        # ---- só escritas daqui para baixo ----
+        nova = c["chave_ver"] + 1
+        conn.execute(
+            """UPDATE colecoes SET chave_ver = %s, nome_cif = %s, rotacao_pendente = false
+               WHERE id = %s""",
+            (nova, dados.nome_cif, colecao_id),
+        )
+        with conn.cursor() as cur:
+            cur.executemany(
+                """UPDATE colecao_membros SET chave_ver = %s, chave_colecao_cif = %s
+                   WHERE colecao_id = %s AND usuario_id = %s""",
+                [(nova, cif, colecao_id, u) for u, cif in envelopes.items()],
+            )
+            cur.executemany(
+                "UPDATE itens SET chave_ver = %s, meta_cif = %s, segredo_cif = %s WHERE id = %s",
+                [(nova, i.meta_cif, i.segredo_cif, i.id) for i in dados.itens],
+            )
+            cur.executemany(
+                """UPDATE item_versoes SET chave_ver = %s, meta_cif = %s, segredo_cif = %s
+                   WHERE item_id = %s AND versao = %s""",
+                [(nova, v.meta_cif, v.segredo_cif, v.item_id, v.versao) for v in dados.versoes],
+            )
+        _evento(
+            conn,
+            request,
+            sessao,
+            "colecao.rotacionada",
+            "colecao",
+            colecao_id,
+            {
+                "chave_ver": nova,
+                "membros": len(envelopes),
+                "itens": len(itens),
+                "versoes": len(versoes),
+            },
+        )
+    return {"chave_ver": nova}
+
+
 # ---------- itens ----------
 
 
@@ -363,7 +652,7 @@ def editar_item(
             raise HTTPException(409, "item_excluido")
         if i["versao"] != esperada:
             raise HTTPException(409, "conflito_versao")
-        if dados.chave_ver != i["chave_ver"]:
+        if dados.chave_ver != i["colecao_chave_ver"]:
             raise HTTPException(409, "chave_ver_desatualizada")
         conn.execute(
             """INSERT INTO item_versoes
@@ -403,12 +692,21 @@ def editar_item(
     return {"versao": esperada + 1}
 
 
+def _revelavel(conn, sessao, item_id) -> dict:
+    """Revelar pede `ver`; item na lixeira só aparece para `editar` (GET lixeira), então
+    revelar o segredo dele pela rota direta também pede `editar`."""
+    i = _item(conn, sessao, item_id, "ver")
+    if i["excluido_em"] is not None and NIVEL[i["permissao"]] < NIVEL["editar"]:
+        raise HTTPException(403, "sem_permissao")
+    return i
+
+
 @rota.get("/itens/{item_id}/segredo")
 def revelar(item_id: UUID, request: Request, sessao: seguranca.Ativo):
     """RF-A02/A03: o evento item.revelado é gravado na mesma transação; se ele falhar, a
-    transação cai e o segredo não sai (500 sem corpo útil)."""
+    transação cai e o segredo não sai (500 sem corpo útil). `chave_ver` é a do item (§5.4)."""
     with _transacao(request, sessao) as conn:
-        i = _item(conn, sessao, item_id, "ver")
+        i = _revelavel(conn, sessao, item_id)
         _evento(
             conn,
             request,
@@ -453,7 +751,7 @@ def versoes(item_id: UUID, request: Request, sessao: seguranca.Ativo):
 @rota.get("/itens/{item_id}/versoes/{versao}")
 def revelar_versao(item_id: UUID, versao: int, request: Request, sessao: seguranca.Ativo):
     with _transacao(request, sessao) as conn:
-        i = _item(conn, sessao, item_id, "ver")
+        i = _revelavel(conn, sessao, item_id)
         v = db.linha(
             conn,
             """SELECT meta_cif, segredo_cif, chave_ver FROM item_versoes

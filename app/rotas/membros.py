@@ -1,6 +1,7 @@
-"""Membros da organização (§5.3, Fase 5): listar, confirmar, suspender/reativar, papel, remover.
+"""Membros da organização (§5.3): listar, confirmar, suspender/reativar, papel, remover.
 
-Promoção a owner e o relatório/rotação da remoção são da Fase 7.
+Fase 7: promoção a owner e reativação de owner com envelopes `gerenciar` (D13), remoção com
+relatório de offboarding e marcação de rotação (RF-U03/U04/U05).
 """
 
 from typing import Annotated, Literal
@@ -8,10 +9,11 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Request
 from psycopg.rows import dict_row
-from pydantic import StringConstraints
+from pydantic import Field, StringConstraints
 
 from app import auditoria, db, relogio, seguranca
 from app.rotas.auth import Entrada
+from app.rotas.cofre import X1, marcar_rotacao
 
 rota = APIRouter()
 
@@ -20,8 +22,22 @@ class Confirmacao(Entrada):
     fingerprint: Annotated[str, StringConstraints(max_length=80)]
 
 
+class EnvelopeOwner(Entrada):
+    colecao_id: UUID
+    chave_ver: int = Field(ge=1)
+    chave_colecao_cif: X1
+
+
 class NovoPapel(Entrada):
-    papel: Literal["admin", "member"]  # owner: promoção é da Fase 7
+    papel: Literal["owner", "admin", "member"]
+    # Só na promoção a owner: um envelope `gerenciar` por coleção da org (D13).
+    envelopes: list[EnvelopeOwner] = Field(default_factory=list, max_length=20_000)
+
+
+class Reativacao(Entrada):
+    # Só para owner: envelopes das coleções em que ele não tem `gerenciar` (criadas enquanto
+    # estava suspenso). Quem reativa owner é owner e tem todas as collectionKeys (D13).
+    envelopes: list[EnvelopeOwner] = Field(default_factory=list, max_length=20_000)
 
 
 @rota.get("/membros")
@@ -56,6 +72,7 @@ def _acao(
     efeito,
     *,
     tira_owner: bool = True,
+    so_owner: bool = False,
     meta=None,
 ):
     """Esqueleto comum, numa transação: trava a gestão da org e o alvo; checa, nesta ordem,
@@ -73,6 +90,8 @@ def _acao(
             conn, "SELECT papel, estado FROM usuarios WHERE id = %s", (sessao.usuario_id,)
         )
         if ator["estado"] != "ativo" or ator["papel"] not in ("owner", "admin"):
+            raise HTTPException(403, "sem_permissao")
+        if so_owner and ator["papel"] != "owner":
             raise HTTPException(403, "sem_permissao")
         alvo = db.linha(
             conn,
@@ -168,9 +187,59 @@ def suspender(alvo_id: UUID, request: Request, sessao: seguranca.Gestor):
     return _acao(request, sessao, alvo_id, "membro.suspenso", ("ativo",), efeito)
 
 
+def envelopes_de_owner(conn, org_id, alvo_id, envelopes, todas: bool) -> int:
+    """D13: o alvo passa a ter `gerenciar` (com o envelope recebido) nas coleções exigidas —
+    `todas` as da org na promoção; na reativação, as em que ele não tem `gerenciar`. Envelope
+    para coleção não exigida da org é aceito e substitui o atual (mesma chave). Trava as coleções
+    da org (ordem de id): nenhuma é criada (trava consultiva) nem rotacionada no meio."""
+    por = {e.colecao_id: e for e in envelopes}
+    if len(por) != len(envelopes):
+        raise HTTPException(422, "envelopes_duplicados")
+    colecoes = dict(
+        conn.execute(
+            "SELECT id, chave_ver FROM colecoes WHERE org_id = %s ORDER BY id FOR UPDATE",
+            (org_id,),
+        ).fetchall()
+    )
+    gerencia = {
+        cid
+        for (cid,) in conn.execute(
+            """SELECT colecao_id FROM colecao_membros
+               WHERE usuario_id = %s AND permissao = 'gerenciar'""",
+            (alvo_id,),
+        )
+    }
+    exigidas = set(colecoes) if todas else set(colecoes) - gerencia
+    if not exigidas <= set(por) or not set(por) <= set(colecoes):
+        raise HTTPException(422, "envelopes_incompletos")
+    if any(e.chave_ver != colecoes[cid] for cid, e in por.items()):
+        raise HTTPException(409, "chave_ver_desatualizada")
+    with conn.cursor() as cur:
+        cur.executemany(
+            """INSERT INTO colecao_membros
+                 (colecao_id, usuario_id, permissao, chave_ver, chave_colecao_cif)
+               VALUES (%s, %s, 'gerenciar', %s, %s)
+               ON CONFLICT (colecao_id, usuario_id) DO UPDATE
+               SET permissao = 'gerenciar', chave_ver = EXCLUDED.chave_ver,
+                   chave_colecao_cif = EXCLUDED.chave_colecao_cif""",
+            [(cid, alvo_id, e.chave_ver, e.chave_colecao_cif) for cid, e in por.items()],
+        )
+    return len(por)
+
+
 @rota.post("/membros/{alvo_id}/reativar")
-def reativar(alvo_id: UUID, request: Request, sessao: seguranca.Gestor):
+def reativar(
+    alvo_id: UUID, request: Request, sessao: seguranca.Gestor, dados: Reativacao | None = None
+):
+    """Owner reativado precisa de envelope das coleções criadas enquanto estava suspenso
+    (422 envelopes_incompletos): quem reativa (owner) manda pelo cliente dele."""
+    envelopes = dados.envelopes if dados else []
+
     def efeito(conn, alvo):
+        if alvo["papel"] == "owner":
+            envelopes_de_owner(conn, sessao.org_id, alvo["id"], envelopes, todas=False)
+        elif envelopes:
+            raise HTTPException(422, "envelopes_incompletos")
         _estado(conn, alvo["id"], "ativo")
         return {"id": alvo["id"], "estado": "ativo"}
 
@@ -181,12 +250,18 @@ def reativar(alvo_id: UUID, request: Request, sessao: seguranca.Gestor):
 
 @rota.put("/membros/{alvo_id}/papel")
 def alterar_papel(alvo_id: UUID, dados: NovoPapel, request: Request, sessao: seguranca.Gestor):
-    """admin ↔ member (owner/admin) e rebaixar owner (só owner). O papel é lido do banco a cada
-    requisição: vale na hora para as sessões abertas do alvo, sem precisar revogá-las."""
+    """admin ↔ member (owner/admin); rebaixar owner e promover a owner (só owner). Promover exige
+    alvo ativo e um envelope `gerenciar` de TODAS as coleções da org (RF-U05/D13). O papel é
+    lido do banco a cada requisição: vale na hora para as sessões abertas do alvo."""
+    promover = dados.papel == "owner"
+    if dados.envelopes and not promover:
+        raise HTTPException(422, "envelopes_incompletos")
 
     def efeito(conn, alvo):
         if alvo["papel"] == dados.papel:  # mesmo papel: 200 idempotente, sem evento
             return SemMudanca(id=alvo["id"], papel=dados.papel)
+        if promover:
+            envelopes_de_owner(conn, sessao.org_id, alvo["id"], dados.envelopes, todas=True)
         conn.execute(
             "UPDATE usuarios SET papel = %s, atualizado_em = now() WHERE id = %s",
             (dados.papel, alvo["id"]),
@@ -198,8 +273,9 @@ def alterar_papel(alvo_id: UUID, dados: NovoPapel, request: Request, sessao: seg
         sessao,
         alvo_id,
         "membro.papel_alterado",
-        ("aceito", "ativo", "suspenso"),
+        ("ativo",) if promover else ("aceito", "ativo", "suspenso"),
         efeito,
+        so_owner=promover,
         meta=lambda alvo: {"antes": alvo["papel"], "depois": dados.papel},
     )
 
@@ -207,17 +283,36 @@ def alterar_papel(alvo_id: UUID, dados: NovoPapel, request: Request, sessao: seg
 @rota.delete("/membros/{alvo_id}")
 def remover(alvo_id: UUID, request: Request, sessao: seguranca.Gestor):
     """Corta o acesso e anonimiza nome/e-mail (RNF-15d); eventos ficam com o ator_id.
-    `relatorio` fica vazio até a Fase 7 (coleções/rotação)."""
+    RF-U03: apaga os envelopes dele, marca as coleções que ele alcançava `rotacao_pendente` e os
+    itens delas (inclusive lixeira) `rotacao_senha_pendente`, e devolve o relatório."""
+    contagem = []
 
     def efeito(conn, alvo):
         _cortar_acesso(conn, alvo["id"])
+        colecoes = [
+            cid
+            for (cid,) in conn.execute(
+                """SELECT c.id FROM colecoes c JOIN colecao_membros cm ON cm.colecao_id = c.id
+                   WHERE cm.usuario_id = %s ORDER BY c.id FOR UPDATE OF c""",
+                (alvo["id"],),
+            )
+        ]
+        contagem.extend(colecoes)
+        itens = {cid: [] for cid in colecoes}
+        for iid, cid in conn.execute(
+            "SELECT id, colecao_id FROM itens WHERE colecao_id = ANY(%s) ORDER BY id",
+            (colecoes,),
+        ):
+            itens[cid].append(iid)
+        conn.execute("DELETE FROM colecao_membros WHERE usuario_id = %s", (alvo["id"],))
+        marcar_rotacao(conn, colecoes)
         conn.execute(
             """UPDATE usuarios SET estado = 'removido', nome = NULL,
                       email = 'removido-' || id || '@invalido', atualizado_em = now()
                WHERE id = %s""",
             (alvo["id"],),
         )
-        return {"relatorio": []}
+        return {"relatorio": [{"colecao_id": cid, "itens": itens[cid]} for cid in colecoes]}
 
     return _acao(
         request,
@@ -226,4 +321,5 @@ def remover(alvo_id: UUID, request: Request, sessao: seguranca.Gestor):
         "membro.removido",
         ("convidado", "aceito", "ativo", "suspenso"),
         efeito,
+        meta=lambda alvo: {"colecoes": len(contagem)},  # ids só no relatório, não no evento
     )
