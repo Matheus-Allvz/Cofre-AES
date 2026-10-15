@@ -23,6 +23,14 @@ docker compose run --rm -T api python -m app.cli criar-org --nome "Minha Empresa
 # {"org_id": "...", "usuario_id": "...", "token": "..."}
 ```
 
+Convite do owner inicial perdido ou vencido (só enquanto ele não aceitou; o anterior deixa de valer):
+
+```bash
+docker compose run --rm -T api python -m app.cli reemitir-convite --email dono@empresa.com
+```
+
+A política padrão exige MFA (TOTP): no primeiro login o owner é levado a configurá-lo.
+
 O papel `cofre_app` é criado por `db/init/` só no primeiro boot (volume vazio).
 Para recriar o banco do zero: `docker compose down -v`.
 
@@ -56,4 +64,5 @@ Outro Postgres de teste: `TEST_DATABASE_URL_DONO=postgresql://...`.
   segue a conta ~60 MiB + concorrência × 64 MiB, com folga (ver `docker-compose.yml`). Carga de
   prova: `python scripts/carga_login.py --projeto <projeto compose> --n 40`.
 
+Riscos aceitos e controles: [`docs/seguranca.md`](docs/seguranca.md).
 Plano completo, requisitos e decisões: [`docs/plano/`](docs/plano/).
