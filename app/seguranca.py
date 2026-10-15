@@ -72,7 +72,7 @@ def verificar_auth(guardado: str, segredo: bytes, auth_hash: bytes) -> bool:
     with _vez_do_argon2():
         try:
             return HASHER.verify(guardado, hmac_pepper(segredo, auth_hash))
-        except VerificationError, InvalidHashError:
+        except (VerificationError, InvalidHashError):
             return False
 
 

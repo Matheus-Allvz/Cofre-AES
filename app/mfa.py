@@ -38,7 +38,7 @@ def chave_totp(segredo: bytes, usuario_id, envelope: str) -> bytes | None:
     """Segredo TOTP decifrado, ou None se o envelope foi adulterado/trocado (falha fechada)."""
     try:
         return cifra_servidor.decifrar(segredo, usuario_id, envelope)
-    except InvalidTag, ValueError:
+    except (InvalidTag, ValueError):
         return None
 
 
