@@ -147,6 +147,8 @@ def aceitar(dados: Aceite, request: Request):
     limites.contar_ip(request.app.state.pool, origem["ip"], "convites")
     segredo = _segredo(request)
     chave_publica = seguranca.de_b64u(dados.chave_publica)
+    # Argon2 antes de abrir a transação: a espera pela vez não segura conexão do pool.
+    auth = seguranca.hash_auth(segredo, seguranca.de_b64u(dados.auth_hash))
     with db.transacao(request.app.state.pool) as conn:
         c = _convite(conn, dados.token)
         # Bootstrap (convite da CLI, sem criado_por): o owner inicial confere a própria chave.
@@ -166,7 +168,7 @@ def aceitar(dados: Aceite, request: Request):
                 "estado": estado,
                 "kdf": Jsonb(dados.kdf),
                 "sal": seguranca.de_b64u(dados.sal),
-                "auth": seguranca.hash_auth(segredo, seguranca.de_b64u(dados.auth_hash)),
+                "auth": auth,
                 "cu": dados.chave_usuario_cif,
                 "cur": dados.chave_usuario_recup_cif,
                 "recup": seguranca.hmac_pepper(segredo, seguranca.de_b64u(dados.recup_auth)),
@@ -321,6 +323,7 @@ def trocar_senha(
         with db.transacao(pool) as conn:
             auditoria.registrar(conn, resultado="falha", **evento)
         raise HTTPException(401, "credenciais_invalidas")
+    novo_hash = seguranca.hash_auth(segredo, seguranca.de_b64u(dados.auth_hash))
     with db.transacao(pool) as conn:
         conn.execute(
             """UPDATE usuarios SET kdf = %s, kdf_sal = %s, auth_hash = %s,
@@ -329,7 +332,7 @@ def trocar_senha(
             (
                 Jsonb(dados.kdf),
                 seguranca.de_b64u(dados.sal),
-                seguranca.hash_auth(segredo, seguranca.de_b64u(dados.auth_hash)),
+                novo_hash,
                 dados.chave_usuario_cif,
                 sessao.usuario_id,
             ),

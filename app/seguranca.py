@@ -4,7 +4,10 @@ import base64
 import hashlib
 import hmac
 import ipaddress
+import os
 import secrets
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Annotated
@@ -40,8 +43,27 @@ def hmac_pepper(segredo: bytes, dados: bytes) -> bytes:
     return hmac.new(subchave(segredo, "pepper"), dados, hashlib.sha256).digest()
 
 
+# Cada hash/verificação Argon2 aloca 64 MiB (m=65536). Sem teto, N requisições paralelas
+# somam N × 64 MiB e o container morre por OOM. Quem passa do teto espera a vez sem alocar;
+# se a espera passar de ARGON2_ESPERA_S, 503. Memória da api: ver mem_limit no compose.
+ARGON2_CONCORRENCIA = int(os.environ.get("COFRE_ARGON2_CONCORRENCIA", "2"))
+ARGON2_ESPERA_S = 10.0
+_argon2 = threading.BoundedSemaphore(ARGON2_CONCORRENCIA)
+
+
+@contextmanager
+def _vez_do_argon2():
+    if not _argon2.acquire(timeout=ARGON2_ESPERA_S):
+        raise HTTPException(503, "ocupado", headers={"Retry-After": "5"})
+    try:
+        yield
+    finally:
+        _argon2.release()
+
+
 def hash_auth(segredo: bytes, auth_hash: bytes) -> str:
-    return HASHER.hash(hmac_pepper(segredo, auth_hash))
+    with _vez_do_argon2():
+        return HASHER.hash(hmac_pepper(segredo, auth_hash))
 
 
 # Verificação falsa para e-mail inexistente: mesmo custo Argon2 que a verdadeira.
@@ -49,10 +71,11 @@ HASH_FALSO = HASHER.hash(secrets.token_bytes(32))
 
 
 def verificar_auth(guardado: str, segredo: bytes, auth_hash: bytes) -> bool:
-    try:
-        return HASHER.verify(guardado, hmac_pepper(segredo, auth_hash))
-    except VerificationError, InvalidHashError:
-        return False
+    with _vez_do_argon2():
+        try:
+            return HASHER.verify(guardado, hmac_pepper(segredo, auth_hash))
+        except VerificationError, InvalidHashError:
+            return False
 
 
 def novo_token() -> tuple[str, bytes]:
