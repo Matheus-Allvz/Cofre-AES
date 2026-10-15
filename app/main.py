@@ -1,7 +1,7 @@
-import asyncio
 import json
 import logging
 import re
+import threading
 import time
 from contextlib import asynccontextmanager
 
@@ -63,10 +63,12 @@ ROTAS_GRANDES = re.compile(
     r"^(POST /api/v1/colecoes/[^/]+/rotacionar|PUT /api/v1/membros/[^/]+/papel"
     r"|POST /api/v1/membros/[^/]+/reativar)$"
 )
-# ponytail: corpos grandes um de cada vez (pico ~ 20 MiB × fator do parse JSON, ver mem_limit);
-# semáforo por rota/usuário se dois owners rotacionarem muito ao mesmo tempo.
-_grandes = asyncio.Semaphore(1)
-ESPERA_GRANDE_S = 30
+# ponytail: um corpo grande por vez no processo (o parse JSON de 20 MiB pesa várias vezes isso,
+# ver mem_limit); o segundo recebe 503 ocupado + Retry-After e o cliente repete. Fila por
+# usuário se rotações simultâneas virarem rotina.
+MAX_GRANDES = 1
+_grandes = 0
+_trava_grandes = threading.Lock()
 
 
 async def _erro(send, status: int, codigo: str, extra=()) -> None:
@@ -139,14 +141,17 @@ class LimiteCorpo:
 
         if not grande:
             return await seguir()
-        try:
-            await asyncio.wait_for(_grandes.acquire(), ESPERA_GRANDE_S)
-        except TimeoutError:
+        global _grandes
+        with _trava_grandes:
+            livre = _grandes < MAX_GRANDES
+            _grandes += livre
+        if not livre:
             return await _erro(send, 503, "ocupado", [(b"retry-after", b"5")])
         try:
             await seguir()
         finally:
-            _grandes.release()
+            with _trava_grandes:
+                _grandes -= 1
 
 
 @app.get("/api/saude")
