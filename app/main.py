@@ -1,4 +1,7 @@
+import asyncio
+import json
 import logging
+import re
 import time
 from contextlib import asynccontextmanager
 
@@ -51,6 +54,100 @@ async def requisicao(request: Request, call_next):
     return resposta
 
 
+# ---------- limite de corpo (antes de qualquer parse) ----------
+
+LIMITE_CORPO = 256 * 1024
+LIMITE_GRANDE = 20 * 1024 * 1024
+# Rotação (coleção inteira recifrada) e envelopes de owner para todas as coleções.
+ROTAS_GRANDES = re.compile(
+    r"^(POST /api/v1/colecoes/[^/]+/rotacionar|PUT /api/v1/membros/[^/]+/papel"
+    r"|POST /api/v1/membros/[^/]+/reativar)$"
+)
+# ponytail: corpos grandes um de cada vez (pico ~ 20 MiB × fator do parse JSON, ver mem_limit);
+# semáforo por rota/usuário se dois owners rotacionarem muito ao mesmo tempo.
+_grandes = asyncio.Semaphore(1)
+ESPERA_GRANDE_S = 30
+
+
+async def _erro(send, status: int, codigo: str, extra=()) -> None:
+    corpo = json.dumps({"erro": codigo}, separators=(",", ":")).encode()
+    headers = [
+        (b"content-type", b"application/json"),
+        (b"content-length", str(len(corpo)).encode()),
+        (b"cache-control", b"no-store"),
+        (b"connection", b"close"),
+        *extra,
+    ]
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    await send({"type": "http.response.body", "body": corpo})
+
+
+class LimiteCorpo:
+    """Limite global do corpo, conferido no Content-Length e contado no stream (chunked):
+    256 KiB; 20 MiB só nas ROTAS_GRANDES, e lá só com cookie de sessão e uma de cada vez.
+    Sem isso, alguns POSTs de 150 MB sem cookie (até no /prelogin) matavam a API por OOM."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        asgi = self.app
+        if scope["type"] != "http":
+            return await asgi(scope, receive, send)
+        grande = bool(ROTAS_GRANDES.match(f"{scope['method']} {scope['path']}"))
+        limite = LIMITE_GRANDE if grande else LIMITE_CORPO
+        headers = dict(scope["headers"])
+        tamanho = headers.get(b"content-length")
+        if tamanho is not None and (not tamanho.isdigit() or int(tamanho) > limite):
+            return await _erro(send, 413, "corpo_grande")
+        if grande and b"sessao=" not in headers.get(b"cookie", b""):
+            return await _erro(send, 401, "nao_autenticado")
+        lidos = 0
+        excedeu = respondeu = False
+
+        async def receber():
+            # Passou do limite: para de ler e finge desconexão; a resposta que o app montar
+            # (400/500 de corpo truncado) é trocada por 413 em enviar().
+            nonlocal lidos, excedeu
+            if excedeu:
+                return {"type": "http.disconnect"}
+            msg = await receive()
+            if msg["type"] == "http.request":
+                lidos += len(msg.get("body", b""))
+                excedeu = lidos > limite
+                if excedeu:
+                    return {"type": "http.disconnect"}
+            return msg
+
+        async def enviar(msg):
+            nonlocal respondeu
+            if msg["type"] == "http.response.start":
+                respondeu = True
+                if excedeu:
+                    return await _erro(send, 413, "corpo_grande")
+            if not excedeu:
+                await send(msg)
+
+        async def seguir():
+            try:
+                await asgi(scope, receber, enviar)
+            except Exception:
+                if not excedeu or respondeu:
+                    raise
+                await _erro(send, 413, "corpo_grande")
+
+        if not grande:
+            return await seguir()
+        try:
+            await asyncio.wait_for(_grandes.acquire(), ESPERA_GRANDE_S)
+        except TimeoutError:
+            return await _erro(send, 503, "ocupado", [(b"retry-after", b"5")])
+        try:
+            await seguir()
+        finally:
+            _grandes.release()
+
+
 @app.get("/api/saude")
 def saude():
     return {"status": "ok"}
@@ -64,3 +161,7 @@ def pronto(request: Request):
     except (psycopg.Error, PoolTimeout):
         return JSONResponse({"erro": "banco_indisponivel"}, status_code=503)
     return {"status": "ok"}
+
+
+# Último add_middleware = mais externo: o corpo é barrado antes de qualquer leitura/parse.
+app.add_middleware(LimiteCorpo)
