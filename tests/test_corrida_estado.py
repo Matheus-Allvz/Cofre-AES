@@ -168,3 +168,57 @@ def test_confirmar_mfa_durante_suspensao_nao_grava(
     sql = "SELECT count(*) FROM codigos_mfa WHERE usuario_id = %s"
     assert ler(banco, sql, (m["id"],)) == [(0,)]
 
+
+# ---------- Ordem de travas: usuarios antes de convites ----------
+
+
+@pytest.mark.parametrize("rota", ["aceitar", "revogar"])
+def test_convite_trava_usuarios_antes_de_convites(cliente, owner, novo_cliente, banco, rota):
+    """Herdado da Fase 5: remover/suspender travam usuarios e depois convites. Aceitar e revogar
+    convite seguem a mesma ordem: com a linha do usuário presa, a requisição espera ali SEM ter
+    pegado a do convite (antes, pegava o convite e esperava o usuário: ciclo de deadlock)."""
+    conv = convidar(cliente, "ordem@t.invalid")
+    if rota == "aceitar":
+        pedir = lambda: novo_cliente().post(  # noqa: E731
+            "/api/v1/convites/aceitar", json=payload_aceite(conv["token"])
+        )
+    else:
+        pedir = lambda: cliente.delete(f"/api/v1/convites/{conv['convite_id']}", headers=H)  # noqa: E731
+    resposta = {}
+    with psycopg.connect(banco["dono"]) as trava:
+        trava.execute("SELECT 1 FROM usuarios WHERE id = %s FOR UPDATE", (conv["usuario_id"],))
+        t = threading.Thread(target=lambda: resposta.update(r=pedir()))
+        t.start()
+        esperar_trava(banco)
+        with psycopg.connect(banco["dono"]) as outro:  # o convite continua livre
+            outro.execute(
+                "SELECT 1 FROM convites WHERE id = %s FOR UPDATE NOWAIT", (conv["convite_id"],)
+            )
+    t.join()
+    assert resposta["r"].status_code == (201 if rota == "aceitar" else 204)
+
+
+def test_remover_e_aceitar_em_paralelo_sem_deadlock(cliente, owner, novo_cliente, banco):
+    for i in range(6):
+        conv = convidar(cliente, f"par{i}@t.invalid")
+        largada, status = threading.Barrier(2), {}
+        aceite = payload_aceite(conv["token"])
+
+        def aceitar(aceite=aceite, largada=largada, status=status):
+            largada.wait()
+            status["aceitar"] = novo_cliente().post("/api/v1/convites/aceitar", json=aceite)
+
+        def remover(uid=conv["usuario_id"], largada=largada, status=status):
+            largada.wait()
+            status["remover"] = cliente.delete(f"{M}/{uid}", headers=H)
+
+        t = [threading.Thread(target=f) for f in (aceitar, remover)]
+        for x in t:
+            x.start()
+        for x in t:
+            x.join()
+        assert status["remover"].status_code == 200
+        assert status["aceitar"].status_code in (201, 410)
+        assert ler(banco, "SELECT estado FROM usuarios WHERE id = %s", (conv["usuario_id"],)) == [
+            ("removido",)
+        ]

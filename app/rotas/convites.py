@@ -83,6 +83,12 @@ def revogar(
 ):
     erro = None
     with db.transacao(request.app.state.pool) as conn:
+        # usuarios antes de convites: mesma ordem de travas de aceitar e remover.
+        conn.execute(
+            """SELECT 1 FROM usuarios u JOIN convites c ON c.usuario_id = u.id
+               WHERE c.id = %s AND c.org_id = %s FOR UPDATE OF u""",
+            (convite_id, sessao.org_id),
+        )
         c = db.linha(
             conn,
             "SELECT usuario_id, usado_em, revogado_em FROM convites"

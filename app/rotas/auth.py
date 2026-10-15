@@ -181,6 +181,13 @@ def aceitar(dados: Aceite, request: Request):
     # Argon2 antes de abrir a transação: a espera pela vez não segura conexão do pool.
     auth = seguranca.hash_auth(segredo, seguranca.de_b64u(dados.auth_hash))
     with db.transacao(request.app.state.pool) as conn:
+        # Ordem de travas da casa: usuarios antes de convites (como remover/suspender e
+        # revogar convite); a ordem inversa fecharia um ciclo de deadlock com a remoção.
+        conn.execute(
+            """SELECT 1 FROM usuarios u JOIN convites c ON c.usuario_id = u.id
+               WHERE c.token_hash = %s FOR UPDATE OF u""",
+            (seguranca.hash_token(dados.token),),
+        )
         c = _convite(conn, dados.token)
         # Bootstrap (convite da CLI, sem criado_por): o owner inicial confere a própria chave.
         bootstrap = c["criado_por"] is None and c["papel"] == "owner"
