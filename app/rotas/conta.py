@@ -126,6 +126,7 @@ def mfa_desativar(dados: Desativar, request: Request, sessao: seguranca.SessaoAt
     )
     limites.limpar_conta(pool, sessao.email)
     with db.transacao(pool) as conn:
+        seguranca.exigir_sessao_viva(conn, sessao)
         conn.execute(
             """UPDATE usuarios SET totp_segredo_cif = NULL, totp_ultimo_passo = NULL,
                       atualizado_em = now() WHERE id = %s""",

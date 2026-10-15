@@ -72,7 +72,7 @@ def verificar_auth(guardado: str, segredo: bytes, auth_hash: bytes) -> bool:
     with _vez_do_argon2():
         try:
             return HASHER.verify(guardado, hmac_pepper(segredo, auth_hash))
-        except VerificationError, InvalidHashError:
+        except (VerificationError, InvalidHashError):
             return False
 
 
@@ -84,6 +84,31 @@ def novo_token() -> tuple[str, bytes]:
 
 def hash_token(texto: str) -> bytes:
     return hashlib.sha256(texto.encode()).digest()
+
+
+ESTADOS_COM_ACESSO = ("aceito", "ativo")
+
+
+def estado_travado(conn, usuario_id) -> str | None:
+    """Relê o estado com FOR SHARE na transação que vai criar sessão ou credencial depois de
+    uma verificação lenta (Argon2, segundo fator). Suspender/remover pegam FOR UPDATE na mesma
+    linha: ou quem cria vê o estado novo, ou a suspensão revoga o que foi criado."""
+    linha = conn.execute(
+        "SELECT estado FROM usuarios WHERE id = %s FOR SHARE", (usuario_id,)
+    ).fetchone()
+    return linha and linha[0]
+
+
+def exigir_sessao_viva(conn, sessao) -> None:
+    """Para rotas autenticadas que trocam credencial: a conta ainda tem acesso e a sessão não
+    foi revogada enquanto a verificação lenta rodava (senão 401 nao_autenticado)."""
+    if (
+        estado_travado(conn, sessao.usuario_id) not in ESTADOS_COM_ACESSO
+        or not conn.execute(
+            "SELECT 1 FROM sessoes WHERE id = %s AND revogada_em IS NULL", (sessao.id,)
+        ).fetchone()
+    ):
+        raise HTTPException(401, "nao_autenticado")
 
 
 def invalidar_recuperacoes(conn, usuario_id) -> None:

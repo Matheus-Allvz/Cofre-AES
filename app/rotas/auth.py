@@ -262,6 +262,12 @@ def login(dados: Login, request: Request, response: Response):
     token, token_hash = seguranca.novo_token()
     agora = relogio.agora()
     with db.transacao(pool) as conn:
+        # Suspenso/removido durante o Argon2: nenhuma sessão nasce (ela "reviveria" ao reativar).
+        estado = seguranca.estado_travado(conn, u["id"])
+        if estado == "suspenso":
+            raise HTTPException(403, "conta_suspensa")
+        if estado not in seguranca.ESTADOS_COM_ACESSO:
+            raise HTTPException(401, "credenciais_invalidas")
         (sessao_id,) = conn.execute(
             """INSERT INTO sessoes (usuario_id, token_hash, criada_em, ultimo_uso, expira_em,
                                     ip, user_agent)
@@ -363,6 +369,7 @@ def trocar_senha(
     limites.limpar_conta(pool, sessao.email)
     novo_hash = seguranca.hash_auth(segredo, seguranca.de_b64u(dados.auth_hash))
     with db.transacao(pool) as conn:
+        seguranca.exigir_sessao_viva(conn, sessao)
         conn.execute(
             """UPDATE usuarios SET kdf = %s, kdf_sal = %s, auth_hash = %s,
                       chave_usuario_cif = %s, atualizado_em = now()
@@ -423,6 +430,9 @@ def recuperar_iniciar(dados: RecuperarIniciar, request: Request):
 
     token, token_hash = seguranca.novo_token()
     with db.transacao(pool) as conn:
+        # Suspenso/removido após a verificação: nenhum token nasce (resposta do kit errado).
+        if seguranca.estado_travado(conn, u["id"]) not in seguranca.ESTADOS_COM_ACESSO:
+            raise HTTPException(401, "credenciais_invalidas")
         conn.execute(
             "INSERT INTO recuperacoes (token_hash, usuario_id, expira_em) VALUES (%s, %s, %s)",
             (token_hash, u["id"], relogio.agora() + RECUPERACAO_VALIDADE),

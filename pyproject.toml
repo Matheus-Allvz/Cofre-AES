@@ -1,6 +1,9 @@
 [tool.ruff]
 line-length = 100
-target-version = "py314"
+# py313, não py314, de propósito: com py314 o `ruff format` tira os parênteses de
+# `except (A, B):` (PEP 758, só válido na 3.14) e o código deixa de rodar em < 3.14.
+# Com py313 o `ruff check` acusa essa forma como erro. O runtime continua 3.14 (Dockerfile/CI).
+target-version = "py313"
 extend-exclude = ["docs"]
 
 [tool.ruff.lint]

@@ -1,21 +1,14 @@
 """RF-P03 (inatividade_min na sessão do servidor) e RF-P07 (política por owner/admin, auditada)."""
 
-import psycopg
 import pytest
-from conftest import EMAIL_OWNER, H, aceitar_e_logar, ler, politica
-from test_convites import convidar
+from conftest import EMAIL_OWNER, H, aceitar_e_logar, ativar, convidar, ler, politica
 
 POLITICA = "/api/v1/org/politica"
 
 
-def _membro_ativo(cliente, novo_cliente, banco, email, papel):
-    """Convida, aceita, loga e ativa direto no banco (a conferência de fingerprint é da Fase 5)."""
-    convite = convidar(cliente, email, papel)
-    c = novo_cliente()
-    auth = aceitar_e_logar(c, convite["token"], email)
-    with psycopg.connect(banco["dono"]) as conn:
-        conn.execute("UPDATE usuarios SET estado = 'ativo' WHERE id = %s", (convite["usuario_id"],))
-    return c, auth
+def _membro_ativo(cliente, novo_cliente, email, papel):
+    m = ativar(cliente, novo_cliente, email, papel)
+    return m["cliente"], m["auth_hash"]
 
 
 def test_get_org(cliente, owner):
@@ -47,13 +40,13 @@ def test_politica_fora_de_faixa_422(cliente, owner, corpo):
 
 def test_politica_member_403_admin_200_com_evento(cliente, owner, novo_cliente, banco):
     """DoD 5 / RF-P07: member → 403; admin → 200 e politica.alterada com antes/depois."""
-    member, _ = _membro_ativo(cliente, novo_cliente, banco, "m@t.invalid", "member")
+    member, _ = _membro_ativo(cliente, novo_cliente, "m@t.invalid", "member")
     nova = {"mfa_obrigatorio": True, "inatividade_min": 30}
     r = member.put(POLITICA, json=nova, headers=H)
     assert (r.status_code, r.json()) == (403, {"erro": "sem_permissao"})
     assert member.get("/api/v1/org").status_code == 200  # member ativo lê
 
-    admin, _ = _membro_ativo(cliente, novo_cliente, banco, "a@t.invalid", "admin")
+    admin, _ = _membro_ativo(cliente, novo_cliente, "a@t.invalid", "admin")
     r = admin.put(POLITICA, json=nova, headers=H)
     assert (r.status_code, r.json()) == (200, nova)
     ((meta, ator),) = ler(
