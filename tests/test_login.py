@@ -136,3 +136,21 @@ def test_logout_revoga_e_registra(cliente, owner, banco):
     with psycopg.connect(banco["dono"]) as conn:
         assert conn.execute("SELECT revogada_em IS NOT NULL FROM sessoes").fetchone()[0]
         assert conn.execute("SELECT count(*) FROM eventos WHERE tipo = 'auth.logout'").fetchone()[0]
+
+
+def test_respostas_publicas_identicas_em_bytes_existente_e_inexistente(cliente, owner):
+    """S1: prelogin e login comparados nos bytes crus (só o valor do sal pode mudar)."""
+    import re
+
+    def pre(email):
+        r = cliente.post("/api/v1/prelogin", json={"email": email})
+        return r.status_code, re.sub(rb'"sal":"[A-Za-z0-9_-]{22}"', b'"sal":""', r.content)
+
+    real, falso = pre(EMAIL_OWNER), pre("ninguem@teste.invalid")
+    assert real == falso == (200, b'{"kdf":{"tipo":"argon2id","m":65536,"t":3,"p":1},"sal":""}')
+
+    def login(email):
+        r = cliente.post("/api/v1/login", json={"email": email, "auth_hash": b64u(32)})
+        return r.status_code, r.content, r.headers.get("content-length")
+
+    assert login(EMAIL_OWNER) == login("ninguem@teste.invalid")

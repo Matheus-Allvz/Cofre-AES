@@ -13,6 +13,13 @@ from app.rotas.convites import Email
 
 KDF_PADRAO = {"tipo": "argon2id", "m": 65536, "t": 3, "p": 1}
 
+
+def _kdf(v: dict) -> dict:
+    """Ordem fixa: o jsonb do Postgres reordena as chaves e a resposta do prelogin de e-mail
+    existente não pode diferir, nem em bytes, da do inexistente."""
+    return {k: v[k] for k in ("tipo", "m", "t", "p")}
+
+
 B64U32 = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{43}$")]
 B64U16 = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{22}$")]
 # Envelope v1 (§3.1); 64 KiB por campo.
@@ -81,7 +88,7 @@ def _segredo(request: Request) -> bytes:
 def _perfil(u: dict) -> dict:
     return {
         "usuario": {k: u[k] for k in ("id", "org_id", "email", "nome", "papel", "estado")},
-        "kdf": u["kdf"],
+        "kdf": _kdf(u["kdf"]),
         "sal": seguranca.b64u(u["kdf_sal"]),
         "chave_usuario_cif": u["chave_usuario_cif"],
         "chave_privada_cif": u["chave_privada_cif"],
@@ -100,11 +107,11 @@ def prelogin(dados: Prelogin, request: Request):
             (dados.email,),
         )
     if u:
-        return {"kdf": u["kdf"], "sal": seguranca.b64u(u["kdf_sal"])}
+        return {"kdf": _kdf(u["kdf"]), "sal": seguranca.b64u(u["kdf_sal"])}
     # E-mail inexistente: sal falso determinístico, mesmo formato (sem enumeração).
     chave = seguranca.subchave(_segredo(request), "prelogin")
     sal = hmac.new(chave, dados.email.encode(), hashlib.sha256).digest()[:16]
-    return {"kdf": KDF_PADRAO, "sal": seguranca.b64u(sal)}
+    return {"kdf": _kdf(KDF_PADRAO), "sal": seguranca.b64u(sal)}
 
 
 def _convite(conn, token: str) -> dict:
