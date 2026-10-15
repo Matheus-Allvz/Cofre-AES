@@ -381,6 +381,7 @@ def trocar_senha(
                WHERE usuario_id = %s AND id <> %s AND revogada_em IS NULL""",
             (relogio.agora(), sessao.usuario_id, sessao.id),
         )
+        seguranca.invalidar_recuperacoes(conn, sessao.usuario_id)
         auditoria.registrar(conn, **evento)
     return Response(status_code=204)
 
@@ -466,14 +467,13 @@ def recuperar_concluir(dados: RecuperarConcluir, request: Request):
     with db.transacao(pool) as conn:
         usuario_id = _recuperacao_valida(conn, token_hash, travar=True)
         agora = relogio.agora()
-        conn.execute(
-            "UPDATE recuperacoes SET usado_em = %s WHERE token_hash = %s", (agora, token_hash)
-        )
-        (org_id,) = conn.execute(
+        # Este token e qualquer outro pendente do usuário deixam de valer.
+        seguranca.invalidar_recuperacoes(conn, usuario_id)
+        alterado = conn.execute(
             """UPDATE usuarios SET kdf = %s, kdf_sal = %s, auth_hash = %s,
                       chave_usuario_cif = %s, chave_usuario_recup_cif = %s,
                       recup_auth_hmac = %s, atualizado_em = now()
-               WHERE id = %s RETURNING org_id""",
+               WHERE id = %s AND estado IN ('aceito', 'ativo') RETURNING org_id""",
             (
                 Jsonb(dados.kdf),
                 seguranca.de_b64u(dados.sal),
@@ -484,6 +484,9 @@ def recuperar_concluir(dados: RecuperarConcluir, request: Request):
                 usuario_id,
             ),
         ).fetchone()
+        if not alterado:  # suspenso/removido depois do iniciar: rollback, nada muda
+            raise HTTPException(401, "token_invalido")
+        (org_id,) = alterado
         conn.execute(
             "UPDATE sessoes SET revogada_em = %s WHERE usuario_id = %s AND revogada_em IS NULL",
             (agora, usuario_id),

@@ -86,6 +86,15 @@ def hash_token(texto: str) -> bytes:
     return hashlib.sha256(texto.encode()).digest()
 
 
+def invalidar_recuperacoes(conn, usuario_id) -> None:
+    """Toda troca de credencial (senha, kit, segundo fator) mata os tokens de recuperação
+    pendentes: um token "estacionado" não desfaz a remediação do dono."""
+    conn.execute(
+        "UPDATE recuperacoes SET usado_em = %s WHERE usuario_id = %s AND usado_em IS NULL",
+        (relogio.agora(), usuario_id),
+    )
+
+
 def fingerprint(chave_publica: bytes) -> str:
     h = hashlib.sha256(chave_publica).hexdigest()[:32].upper()
     return " ".join(h[i : i + 4] for i in range(0, 32, 4))

@@ -74,8 +74,8 @@ def mfa_confirmar(dados: Codigo, request: Request, sessao: seguranca.SessaoAtual
     if u["totp_segredo_cif"] is None:
         raise HTTPException(409, "mfa_nao_iniciado")
     tentar()
-    chave = cifra_servidor.decifrar(segredo, sessao.usuario_id, u["totp_segredo_cif"])
-    passo = totp.verificar(chave, dados.codigo, relogio.agora().timestamp(), None)
+    chave = mfa.chave_totp(segredo, sessao.usuario_id, u["totp_segredo_cif"])
+    passo = chave and totp.verificar(chave, dados.codigo, relogio.agora().timestamp(), None)
     codigos = None
     with db.transacao(pool) as conn:
         # Atômico: o segredo confirmado é o que foi lido (um iniciar paralelo não passa).
@@ -89,6 +89,7 @@ def mfa_confirmar(dados: Codigo, request: Request, sessao: seguranca.SessaoAtual
             ).fetchone()
         ):
             codigos = mfa.gravar_codigos(conn, segredo, sessao.usuario_id)
+            seguranca.invalidar_recuperacoes(conn, sessao.usuario_id)
             auditoria.registrar(conn, tipo="mfa.ativado", **evento)
         else:
             auditoria.registrar(
@@ -131,6 +132,13 @@ def mfa_desativar(dados: Desativar, request: Request, sessao: seguranca.SessaoAt
             (sessao.usuario_id,),
         )
         conn.execute("DELETE FROM codigos_mfa WHERE usuario_id = %s", (sessao.usuario_id,))
+        # Menos um fator: as outras sessões caem, como na troca de senha.
+        conn.execute(
+            """UPDATE sessoes SET revogada_em = %s
+               WHERE usuario_id = %s AND id <> %s AND revogada_em IS NULL""",
+            (relogio.agora(), sessao.usuario_id, sessao.id),
+        )
+        seguranca.invalidar_recuperacoes(conn, sessao.usuario_id)
         auditoria.registrar(conn, tipo="mfa.desativado", **evento)
     return Response(status_code=204)
 

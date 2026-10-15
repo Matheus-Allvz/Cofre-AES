@@ -5,6 +5,7 @@ import pytest
 from conftest import (
     EMAIL_OWNER,
     KDF,
+    H,
     ativar_mfa,
     b64u,
     codigo_totp,
@@ -155,3 +156,49 @@ def test_suspenso_nao_recupera(cliente, conta, banco):
         conn.execute("UPDATE usuarios SET estado = 'suspenso'")
     r = _iniciar(cliente, conta["recup_auth"])
     assert (r.status_code, r.json()) == (401, {"erro": "credenciais_invalidas"})
+
+
+def test_concluir_invalida_outros_tokens_pendentes(cliente, conta, novo_cliente, banco):
+    """Correção pós-validação: token "estacionado" não desfaz a recuperação já concluída."""
+    a = _iniciar(novo_cliente(), conta["recup_auth"]).json()["token"]
+    b = _iniciar(novo_cliente(), conta["recup_auth"]).json()["token"]
+    nova = _conclusao(a)
+    assert cliente.post(CONCLUIR, json=nova).status_code == 204
+    r = cliente.post(CONCLUIR, json=_conclusao(b))
+    assert (r.status_code, r.json()) == (401, {"erro": "token_invalido"})
+    assert login(novo_cliente(), nova["auth_hash"]).status_code == 200  # a 1ª conclusão vale
+    assert ler(banco, "SELECT count(*) FROM recuperacoes WHERE usado_em IS NULL") == [(0,)]
+
+
+def test_troca_de_senha_invalida_tokens_pendentes(cliente, conta):
+    token = _iniciar(cliente, conta["recup_auth"]).json()["token"]
+    troca = {
+        "auth_hash_atual": conta["auth_hash"],
+        "kdf": dict(KDF),
+        "sal": b64u(16),
+        "auth_hash": b64u(32),
+        "chave_usuario_cif": env_v1(),
+    }
+    assert cliente.post("/api/v1/eu/senha", json=troca, headers=H).status_code == 204
+    r = cliente.post(CONCLUIR, json=_conclusao(token))
+    assert (r.status_code, r.json()) == (401, {"erro": "token_invalido"})
+    assert login(cliente, troca["auth_hash"]).status_code == 200  # a troca não foi desfeita
+
+
+def test_ativar_mfa_invalida_tokens_pendentes(cliente, conta, relogio):
+    token = _iniciar(cliente, conta["recup_auth"]).json()["token"]
+    ativar_mfa(cliente)
+    assert cliente.post(CONCLUIR, json=_conclusao(token)).status_code == 401
+
+
+@pytest.mark.parametrize("estado", ["suspenso", "removido"])
+def test_concluir_recheca_estado_sem_alterar_nada(cliente, conta, banco, estado):
+    token = _iniciar(cliente, conta["recup_auth"]).json()["token"]
+    antes = ler(banco, "SELECT auth_hash, chave_usuario_cif, recup_auth_hmac FROM usuarios")
+    with psycopg.connect(banco["dono"]) as conn:
+        conn.execute("UPDATE usuarios SET estado = %s", (estado,))
+    r = cliente.post(CONCLUIR, json=_conclusao(token))
+    assert (r.status_code, r.json()) == (401, {"erro": "token_invalido"})
+    assert ler(banco, "SELECT auth_hash, chave_usuario_cif, recup_auth_hmac FROM usuarios") == antes
+    assert ler(banco, "SELECT count(*) FROM recuperacoes WHERE usado_em IS NOT NULL") == [(0,)]
+    assert ler(banco, "SELECT count(*) FROM eventos WHERE meta->>'etapa' = 'concluida'") == [(0,)]
