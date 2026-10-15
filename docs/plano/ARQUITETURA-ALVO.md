@@ -147,7 +147,7 @@ Sem RLS (só a API acessa o banco, que não publica porta). Defesa em profundida
 
 Base: `/api`. Dados em `/api/v1`. JSON. Erros: corpo `{"erro": "<codigo>"}` (handler único); 422 de validação do FastAPI mantém o formato padrão.
 Autenticação: cookie `sessao`. Em `POST/PUT/PATCH/DELETE` autenticados, header `X-Cofre: 1` obrigatório (403 `csrf` sem ele). Respostas da API com `Cache-Control: no-store`.
-Limite de corpo (Fase 7), conferido antes de qualquer parse no `Content-Length` e contando os bytes do stream (`Transfer-Encoding: chunked`): 256 KiB; 20 MiB só em `POST /colecoes/{id}/rotacionar`, `PUT /membros/{id}/papel` e `POST /membros/{id}/reativar` quando há cookie `sessao`, um corpo grande por vez (o seguinte recebe 503 `ocupado` + `Retry-After`). Acima → 413 `corpo_grande`.
+Limite de corpo (Fase 7), conferido antes de qualquer parse no `Content-Length` e contando os bytes do stream (`Transfer-Encoding: chunked`): 256 KiB; 20 MiB só em `POST /colecoes/{id}/rotacionar`, `PUT /membros/{id}/papel` e `POST /membros/{id}/reativar` quando há cookie `sessao`, um corpo acima de 256 KiB por vez nessas rotas (o seguinte recebe 503 `ocupado` + `Retry-After`). Acima → 413 `corpo_grande`.
 Sessão com `mfa_pendente=true` só acessa `/eu`, `/eu/mfa/*` e `/logout` (403 `mfa_configuracao_requerida` no resto).
 
 ### 5.1 Públicas (rate limit por IP; login/recuperação também por conta)

@@ -42,7 +42,7 @@ riscos residuais conhecidos e as decisões que os aceitam.
 - **Limite de corpo (Fase 7).** Antes de qualquer parse, um middleware ASGI confere o
   `Content-Length` e conta os bytes do stream (inclusive `Transfer-Encoding: chunked`): 256 KiB
   por padrão; 20 MiB só em `rotacionar`, promoção e reativação de owner, e só com cookie de
-  sessão. Acima → `413 {"erro":"corpo_grande"}`. Corpo grande é um por vez no processo (o
+  sessão. Acima → `413 {"erro":"corpo_grande"}`. Corpo acima de 256 KiB é um por vez (o
   segundo recebe `503 ocupado` + `Retry-After: 5`), porque o parse JSON de 20 MiB ocupa várias
   vezes isso em memória. Antes, três POSTs de 150 MB sem cookie (até no `/prelogin`) derrubavam
   a API por OOM. Carga reproduzível: `scripts/carga_corpo.py`.
