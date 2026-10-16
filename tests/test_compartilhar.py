@@ -386,15 +386,17 @@ def test_rotacionar_erros_nao_mudam_nada(cliente, banco, rotacao):
         assert foto(banco, col) == antes
 
     incompleta = (422, {"erro": "rotacao_incompleta"})
+    # Conjunto de membros diferente do atual = alguém entrou/saiu desde o GET /rotacao: 409.
+    membros = (409, {"erro": "membros_alterados"})
     lixo = rotacao["lixo"]
     tentar(lambda c: c.update(itens=[i for i in c["itens"] if i["id"] != lixo]), incompleta)
     tentar(lambda c: c["versoes"].pop(), incompleta)
-    tentar(lambda c: c["envelopes"].pop(), incompleta)
+    tentar(lambda c: c["envelopes"].pop(), membros)
     tentar(
         lambda c: c["envelopes"].append(
             {"usuario_id": "00000000-0000-0000-0000-000000000000", "chave_colecao_cif": x1()}
         ),
-        incompleta,
+        membros,
     )
     tentar(lambda c: c["envelopes"].append(dict(c["envelopes"][0])), incompleta)  # repetido
     tentar(lambda c: c["itens"].append(dict(c["itens"][0])), incompleta)
@@ -576,7 +578,40 @@ def test_rotacao_depois_de_remocao_concorrente_recusa_envelope_que_sobra(cliente
     t1.join()
     t2.join()
     assert rem["r"].status_code == 204
-    assert (rot["r"].status_code, rot["r"].json()) == (422, {"erro": "rotacao_incompleta"})
+    # Herdado da Fase 7: corrida com mudança de membros é conflito (409), não corpo inválido.
+    assert (rot["r"].status_code, rot["r"].json()) == (409, {"erro": "membros_alterados"})
+
+
+def test_rotacao_depois_de_adicao_concorrente_e_409(cliente, owner, novo_cliente, banco, rotacao):
+    """Herdado: alguém ganha acesso entre o GET /rotacao e o POST → 409 membros_alterados, nada
+    muda; refeito com os membros atuais → 200 e o novo membro recebe a chave nova."""
+    col = rotacao["col"]
+    corpo = corpo_rotacao(banco, col)  # montado antes da entrada do novo membro
+    novo = ativar(cliente, novo_cliente, "entrou@t.invalid")
+    _ok(
+        cliente.post(
+            f"{V}/colecoes/{col}/membros",
+            json={
+                "usuario_id": novo["id"],
+                "permissao": "ver",
+                "chave_ver": 1,
+                "chave_colecao_cif": x1(),
+            },
+            headers=H,
+        ),
+        201,
+    )
+    antes = foto(banco, col)
+    r = rotacionar(cliente, col, corpo)
+    assert (r.status_code, r.json()) == (409, {"erro": "membros_alterados"})
+    assert foto(banco, col) == antes
+    r = rotacionar(cliente, col, corpo_rotacao(banco, col))
+    assert (r.status_code, r.json()) == (200, {"chave_ver": 2})
+    assert ler(
+        banco,
+        "SELECT chave_ver FROM colecao_membros WHERE colecao_id = %s AND usuario_id = %s",
+        (col, novo["id"]),
+    ) == [(2,)]
 
 
 # ---------- offboarding (DoD 5) e senha trocada (DoD 6) ----------
@@ -602,8 +637,13 @@ def test_remover_pessoa_devolve_relatorio_e_marca_rotacao(cliente, owner, novo_c
     itens = {str(i) for (i,) in ler(banco, "SELECT id FROM itens WHERE rotacao_senha_pendente")}
     assert itens == {i1, i2, i3} and i4 not in itens
     assert ler(banco, "SELECT 1 FROM colecao_membros WHERE usuario_id = %s", (m["id"],)) == []
+    # Herdado: o relatório fica gravado no evento (ids não são segredo) e sai na auditoria.
     (meta,) = ler(banco, "SELECT meta FROM eventos WHERE tipo = 'membro.removido'")[0]
-    assert meta == {"colecoes": 3}
+    assert meta["colecoes"] == 3
+    assert {x["colecao_id"]: sorted(x["itens"]) for x in meta["relatorio"]} == relatorio
+    aud = _ok(cliente.get(f"{V}/auditoria", params={"tipo": "membro.removido"})).json()
+    assert [e["alvo_id"] for e in aud] == [m["id"]]
+    assert aud[0]["meta"]["relatorio"] == r.json()["relatorio"]
     # Pessoa sem coleção: relatório vazio.
     n = ativar(cliente, novo_cliente, "semcol@t.invalid")
     r = cliente.delete(f"{V}/membros/{n['id']}", headers=H)
@@ -725,8 +765,22 @@ def test_owner_reativado_exige_envelopes_das_colecoes_que_faltam(
     r = cliente.post(url, json={"envelopes": envelopes_owner(banco, {antiga})}, headers=H)
     assert (r.status_code, r.json()) == (422, {"erro": "envelopes_incompletos"})
     assert ler(banco, "SELECT estado FROM usuarios WHERE id = %s", (o2["id"],)) == [("suspenso",)]
+    # Herdado: envelope que substituiria o que ele já tem (em `antiga`) é recusado.
+    r = cliente.post(url, json={"envelopes": envelopes_owner(banco)}, headers=H)
+    assert (r.status_code, r.json()) == (409, {"erro": "envelope_existente"})
+    assert ler(banco, "SELECT estado FROM usuarios WHERE id = %s", (o2["id"],)) == [("suspenso",)]
+    guardado = ler(
+        banco,
+        "SELECT chave_colecao_cif FROM colecao_membros WHERE colecao_id = %s AND usuario_id = %s",
+        (antiga, o2["id"]),
+    )
     r = cliente.post(url, json={"envelopes": envelopes_owner(banco, {nova})}, headers=H)
     assert (r.status_code, r.json()) == (200, {"id": o2["id"], "estado": "ativo"})
+    assert guardado == ler(
+        banco,
+        "SELECT chave_colecao_cif FROM colecao_membros WHERE colecao_id = %s AND usuario_id = %s",
+        (antiga, o2["id"]),
+    )
     # (o fixture confere o D13 com o2 ativo: precisa de gerenciar em `antiga` e `nova`)
     # Membro comum reativa sem envelopes; com envelopes → 422.
     m = ativar(cliente, novo_cliente, "comum@t.invalid")

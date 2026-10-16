@@ -189,9 +189,11 @@ def suspender(alvo_id: UUID, request: Request, sessao: seguranca.Gestor):
 
 def envelopes_de_owner(conn, org_id, alvo_id, envelopes, todas: bool) -> int:
     """D13: o alvo passa a ter `gerenciar` (com o envelope recebido) nas coleções exigidas —
-    `todas` as da org na promoção; na reativação, as em que ele não tem `gerenciar`. Envelope
-    para coleção não exigida da org é aceito e substitui o atual (mesma chave). Trava as coleções
-    da org (ordem de id): nenhuma é criada (trava consultiva) nem rotacionada no meio."""
+    `todas` as da org na promoção (substitui o envelope que ele já tiver: mesma chave); na
+    reativação, exatamente as em que ele não tem envelope — um envelope que substituiria o atual
+    é recusado (409 envelope_existente): o envelope guardado pode ser o de uma rotação feita
+    enquanto ele estava suspenso e ninguém precisa trocá-lo. Trava as coleções da org (ordem de
+    id): nenhuma é criada (trava consultiva) nem rotacionada no meio."""
     por = {e.colecao_id: e for e in envelopes}
     if len(por) != len(envelopes):
         raise HTTPException(422, "envelopes_duplicados")
@@ -201,17 +203,17 @@ def envelopes_de_owner(conn, org_id, alvo_id, envelopes, todas: bool) -> int:
             (org_id,),
         ).fetchall()
     )
-    gerencia = {
+    tem = {
         cid
         for (cid,) in conn.execute(
-            """SELECT colecao_id FROM colecao_membros
-               WHERE usuario_id = %s AND permissao = 'gerenciar'""",
-            (alvo_id,),
+            "SELECT colecao_id FROM colecao_membros WHERE usuario_id = %s", (alvo_id,)
         )
     }
-    exigidas = set(colecoes) if todas else set(colecoes) - gerencia
+    exigidas = set(colecoes) if todas else set(colecoes) - tem
     if not exigidas <= set(por) or not set(por) <= set(colecoes):
         raise HTTPException(422, "envelopes_incompletos")
+    if not todas and set(por) & tem:
+        raise HTTPException(409, "envelope_existente")
     if any(e.chave_ver != colecoes[cid] for cid, e in por.items()):
         raise HTTPException(409, "chave_ver_desatualizada")
     with conn.cursor() as cur:
@@ -285,7 +287,7 @@ def remover(alvo_id: UUID, request: Request, sessao: seguranca.Gestor):
     """Corta o acesso e anonimiza nome/e-mail (RNF-15d); eventos ficam com o ator_id.
     RF-U03: apaga os envelopes dele, marca as coleções que ele alcançava `rotacao_pendente` e os
     itens delas (inclusive lixeira) `rotacao_senha_pendente`, e devolve o relatório."""
-    contagem = []
+    relatorio = []
 
     def efeito(conn, alvo):
         _cortar_acesso(conn, alvo["id"])
@@ -297,7 +299,6 @@ def remover(alvo_id: UUID, request: Request, sessao: seguranca.Gestor):
                 (alvo["id"],),
             )
         ]
-        contagem.extend(colecoes)
         itens = {cid: [] for cid in colecoes}
         for iid, cid in conn.execute(
             "SELECT id, colecao_id FROM itens WHERE colecao_id = ANY(%s) ORDER BY id",
@@ -312,7 +313,10 @@ def remover(alvo_id: UUID, request: Request, sessao: seguranca.Gestor):
                WHERE id = %s""",
             (alvo["id"],),
         )
-        return {"relatorio": [{"colecao_id": cid, "itens": itens[cid]} for cid in colecoes]}
+        relatorio.extend(
+            {"colecao_id": str(cid), "itens": [str(i) for i in itens[cid]]} for cid in colecoes
+        )
+        return {"relatorio": relatorio}
 
     return _acao(
         request,
@@ -321,5 +325,6 @@ def remover(alvo_id: UUID, request: Request, sessao: seguranca.Gestor):
         "membro.removido",
         ("convidado", "aceito", "ativo", "suspenso"),
         efeito,
-        meta=lambda alvo: {"colecoes": len(contagem)},  # ids só no relatório, não no evento
+        # Relatório de offboarding consultável depois (GET /auditoria): ids não são segredo.
+        meta=lambda alvo: {"colecoes": len(relatorio), "relatorio": relatorio},
     )
