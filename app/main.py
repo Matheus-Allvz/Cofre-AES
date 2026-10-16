@@ -132,8 +132,9 @@ class LimiteCorpo:
     """Limite global do corpo, conferido no Content-Length e contado no stream (chunked):
     256 KiB. 20 MiB só nas ROTAS_GRANDES e só para sessão VÁLIDA com a permissão da rota
     (consultadas no banco, numa consulta, antes de ler o corpo), um corpo grande por vez e com
-    prazo de leitura (PRAZO_CORPO_S): estourou → 408 e a vaga é liberada. Sem isso, POSTs de 150 MB sem cookie matavam a API por OOM e um
-    cookie qualquer segurava a vaga com um corpo enviado devagar."""
+    prazo de leitura (PRAZO_CORPO_S): estourou → 408 e a vaga é liberada. Sem isso, POSTs de
+    150 MB sem cookie matavam a API por OOM e um cookie qualquer segurava a vaga com um corpo
+    enviado devagar."""
 
     def __init__(self, app):
         self.app = app

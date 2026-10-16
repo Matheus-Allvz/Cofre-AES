@@ -116,7 +116,9 @@ def test_retencao_mantem_exatamente_7_diarios_4_semanais_3_mensais():
     """Datas escolhidas sem sobreposição: 7 dias recentes (nem domingo nem dia 1), 4 domingos e
     3 dias 1 anteriores, e mais antigos de cada tipo que têm de sair."""
     hoje = date(2026, 10, 16)  # sexta
-    recentes = [hoje - timedelta(days=i) for i in range(9) if (hoje - timedelta(days=i)).isoweekday() != 7]
+    recentes = [
+        hoje - timedelta(days=i) for i in range(9) if (hoje - timedelta(days=i)).isoweekday() != 7
+    ]
     recentes = [d for d in recentes if d.day != 1][:7]
     domingos = [date(2026, 10, 4) - timedelta(weeks=i) for i in range(7)]  # 4 ficam, 3 saem
     primeiros = [date(2026, m, 1) for m in (9, 7, 4, 1)] + [date(2025, 12, 1)]  # não-domingos
@@ -169,13 +171,17 @@ def test_envio_por_prefixo_e_nunca_apaga_no_r2(ambiente):
     assert r.returncode == 0, r.stderr
     enviados = sorted(str(p.relative_to(ambiente / "r2")) for p in (ambiente / "r2").rglob("*.age"))
     arquivos = ["cofre-20261101T030000Z.dump.age", "cofre-20261101T030000Z.manifesto.age"]
-    esperado = sorted(f"r2:secrets-backup/{p}/{a}" for p in ("diario", "semanal", "mensal") for a in arquivos)
+    esperado = sorted(
+        f"r2:secrets-backup/{p}/{a}" for p in ("diario", "semanal", "mensal") for a in arquivos
+    )
     assert [e.replace("\\", "/") for e in enviados] == esperado
     for c in chamadas(ambiente):
         assert c.split()[0] in {"listremotes", "size", "copyto"}, c  # nada de delete/sync/move
         if c.split()[0] != "listremotes":
             assert "--s3-no-check-bucket" in c
-    assert status(ambiente).startswith("em=20261101T030000Z resultado=ok motivo=ok: diario semanal mensal")
+    assert status(ambiente).startswith(
+        "em=20261101T030000Z resultado=ok motivo=ok: diario semanal mensal"
+    )
 
 
 def test_dia_comum_vai_so_para_diario(ambiente):
