@@ -8,7 +8,9 @@ cd "$(dirname "$0")"
 
 alvo=${1:-origin/empresarial}
 git fetch --prune origin
-git reset --hard "$alvo"
+# Sempre na branch local empresarial (descarta mudanças locais, como reset --hard; .env e
+# backups/ ficam, são ignorados pelo git).
+git checkout -q -f -B empresarial "$alvo"
 echo "deploy: $(git rev-parse --short HEAD) $(git log -1 --format=%s)"
 docker compose build
 docker compose up -d --wait

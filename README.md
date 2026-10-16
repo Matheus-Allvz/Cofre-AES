@@ -86,10 +86,10 @@ Detalhes (retenção 7+4+3, prefixos do R2, guarda de cota de 9 GB): [`docs/oper
   `BACKUP_RCLONE_DEST=r2:secrets-backup`. Cópia dos segredos guardada fora da VPS.
 - **Deploy:** automático. Push (merge) na `empresarial` → workflow `Deploy (empresarial)` roda os
   testes do `ci.yml` e, se passarem, executa na VPS `deploy-empresarial.sh`
-  (`git reset --hard origin/empresarial`, `docker compose build`, `up -d --wait`, falha se
+  (`git checkout -f -B empresarial origin/empresarial`, `docker compose build`, `up -d --wait`, falha se
   `/api/pronto` não responder 200). Manual: `ssh deploy@<IP_DA_VPS> /home/deploy/cofre-empresa-api/deploy-empresarial.sh`.
 - **Rollback:** `ssh deploy@<IP_DA_VPS> /home/deploy/cofre-empresa-api/deploy-empresarial.sh <sha>`
-  (faz `git reset --hard <sha>` e o mesmo build/subida). Migrations são forward-only: se o
+  (põe a branch local `empresarial` em `<sha>` e faz o mesmo build/subida). Migrations são forward-only: se o
   commit ruim aplicou migration, voltar o código não volta o banco; aí é restaurar backup
   ([`docs/operacao.md`](docs/operacao.md)). O próximo push na `empresarial` volta a implantar a ponta.
 - **Organização inicial** (uma vez, depois do primeiro deploy):
