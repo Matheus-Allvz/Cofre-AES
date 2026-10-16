@@ -1,8 +1,9 @@
 # Operação
 
 Backup, restauração, bootstrap e segredos do servidor. Riscos e controles: [`seguranca.md`](seguranca.md).
-A instalação na VPS (cron, `age`/`rclone` no host, Caddy) é a Fase 9; aqui está o que os scripts fazem
-e como usá-los.
+Produção (domínio, diretórios, deploy, rollback): README, seção "Produção (empresarial)". Comandos
+na VPS rodam em `/home/deploy/cofre-empresa-api` (projeto compose `cofre-empresa`, definido no
+`docker-compose.yml`).
 
 ## Pré-requisitos no host
 
@@ -38,20 +39,39 @@ BACKUP_AGE_RECIPIENT=age1... COMPOSE_PROJECT=<projeto> scripts/backup.sh
    é apagado (com o manifesto). `scripts/backup.sh --retencao < nomes` mostra o que ficaria.
 3. **Cópia externa (R2):** destino `BACKUP_RCLONE_DEST` (padrão `r2:secrets-backup`). Prefixos
    fixos: `diario/` sempre, `semanal/` no domingo (UTC) e `mensal/` no dia 1 (UTC). Só
-   `rclone copyto --s3-no-check-bucket --no-check-dest` de arquivo novo: **o script nunca apaga
+   `rclone copyto --s3-no-check-bucket --s3-no-head --no-check-dest` de arquivo novo: **o script nunca apaga
    nada no R2**. A validade lá é das regras de ciclo de vida do bucket: `diario/` 8 dias,
    `semanal/` 35, `mensal/` 100.
-4. Sem destino utilizável (`BACKUP_RCLONE_DEST` vazio, `rclone` ausente ou remoto não configurado)
-   o backup local vale, com `AVISO` no log e `motivo=ignorado: ...` no status.
+4. Só `BACKUP_RCLONE_DEST=` **vazio** (explícito) dispensa a cópia externa: o backup local vale,
+   com `AVISO` no log e `motivo=ignorado: ...` no status. Com destino definido (inclusive o padrão
+   `r2:secrets-backup` quando a variável não existe), `rclone` ausente, remoto inexistente, falha
+   ao medir ou ao enviar → saída `4` e `resultado=falha`, nunca `ok` silencioso (o backup local fica).
 5. Escreve `backups/status` (`em=<UTC> resultado=ok|falha motivo=...`) e, só em sucesso,
    `backups/ultimo_ok` (`<UTC> <arquivo>`). Log em stderr, sem segredos.
 
-Saída: `0` ok · `2` configuração · `3` guarda de cota · `4` falha ao medir/enviar ao destino.
-Em `3`/`4` o backup local fica e o status traz o motivo; o cron deve alertar em saída ≠ 0.
+Saída: `0` ok · `1` um comando falhou no meio (`docker compose exec`, `psql`, `pg_dump`, `age`,
+retenção; `set -e`, status `comando falhou (linha N)`) · `2` configuração · `3` guarda de cota ·
+`4` destino externo indisponível ou falha ao medir/enviar. Em `1` não fica arquivo novo (os
+parciais são apagados); em `3`/`4` o backup local fica e o status traz o motivo.
+
+### Cron (produção)
+
+```bash
+scripts/instalar-cron.sh     # idempotente: 30 3 * * * /home/deploy/cofre-empresa-api/scripts/cron-backup.sh
+crontab -l | grep cron-backup
+```
+
+`scripts/cron-backup.sh` carrega o `.env` do projeto (sem imprimir valores), roda o `backup.sh` e
+anexa a saída a `backups/backup.log` (rotacionado ao passar de 1 MiB: `backup.log.1` … `.5`). Em
+saída ≠ 0 grava `backups/ultimo_falhou` (`<UTC> exit=<n>`); um backup bem-sucedido o remove. O
+alerta é esse arquivo: confira `ls backups/ultimo_falhou` e `cat backups/status`. Não há push de
+alerta: o `ntfy` da VPS tem `auth-default-access: deny-all`, e publicar exigiria criar usuário e
+token próprios lá (fica como melhoria; não reaproveitar credencial de outro projeto).
 
 ### Guarda de cota do R2 (nunca passar de 90% do plano grátis)
 
-Antes de enviar, o script mede o uso atual do bucket (`rclone size --json`) e calcula
+Antes de enviar, o script mede o uso atual **do bucket** `secrets-backup` (`rclone size --json`) e
+calcula
 
 ```
 projetado = uso_atual + (tamanho do .dump.age + tamanho do .manifesto.age) × nº de prefixos do dia
@@ -63,6 +83,10 @@ que o ciclo de vida ainda vai expirar, então a conta é conservadora. Testado e
 `tests/test_backup.py` com um `rclone` simulado no `PATH` (exatamente no limite passa, um byte acima
 não envia nada).
 
+A guarda mede só este bucket; a cota grátis do R2 (10 GB-mês de armazenamento, 1 M Class A e 10 M
+Class B por mês) é **por conta**, somando todos os buckets. Se a conta tiver outros buckets, baixe
+`BACKUP_LIMITE_BYTES` para 9 GB menos o que eles ocupam, ou acompanhe o uso no painel do R2.
+
 Espaço em regime: com um backup por dia ficam no bucket ~8 cópias em `diario/`, ~5 em `semanal/` e
 ~4 em `mensal/` ≈ 17 cópias do dump. A guarda só dispara com dump perto de 9 GB / 17 ≈ 530 MB; o
 cofre (blobs de até 64 KiB, dezenas de usuários) fica em poucos MB.
@@ -72,7 +96,7 @@ cofre (blobs de até 64 KiB, dezenas de usuários) fica em poucos MB.
 | Operação do script | Classe | Por execução | Por mês (1 execução/dia) |
 |---|---|---|---|
 | `rclone size` (ListObjectsV2, até 1000 objetos por chamada; o bucket tem ~35) | A | 1 | 31 |
-| `copyto` em `diario/` (PutObject × 2 arquivos; `--no-check-dest` evita o HEAD antes) | A | 2 | 62 |
+| `copyto` em `diario/` (PutObject × 2 arquivos; `--no-check-dest` evita o HEAD antes e `--s3-no-head` o HEAD de conferência depois) | A | 2 | 62 |
 | `copyto` em `semanal/` (domingos) | A | 2 | ~10 |
 | `copyto` em `mensal/` (dia 1) | A | 2 | 2 |
 | `--s3-no-check-bucket` (sem HeadBucket/CreateBucket) | — | 0 | 0 |
@@ -93,30 +117,44 @@ Sobe um `postgres:16-alpine` temporário em container próprio, decifra com `age
 `pg_restore --exit-on-error` e confere: `schema_migracoes` = migrations de `migracoes/` (versão e
 SHA-256) e contagens ≥ o manifesto. Qualquer falha (arquivo truncado ou adulterado, chave errada,
 `pg_restore`, conferência) → saída ≠ 0. O container e os arquivos decifrados somem no fim. Rode
-numa máquina com a chave privada (ex.: baixando os dois arquivos de `diario/`), nunca deixando a
-chave na VPS. O CI roda backup → `--verifica` → arquivo truncado falha a cada PR (job `backup`).
+numa máquina com a chave privada, nunca deixando a chave na VPS. Na máquina do operador (com Docker,
+`age`, `rclone` com o mesmo remoto `r2` e um clone deste repositório na mesma versão de migrations):
+
+```bash
+rclone lsf r2:secrets-backup/diario/ | sort | tail -2          # o par mais recente
+mkdir -p backups && rclone copy --s3-no-check-bucket --include 'cofre-<UTC>.*' r2:secrets-backup/diario/ backups/
+AGE_IDENTITY=~/cofre-backup.key scripts/restaurar.sh backups/cofre-<UTC>.dump.age --verifica   # exit 0
+```
+
+Sem `rclone` local, copie da VPS: `scp -P 443 'deploy@<IP_DA_VPS>:/home/deploy/cofre-empresa-api/backups/cofre-<UTC>.*' backups/`. O CI roda backup → `--verifica` → arquivo truncado falha a cada PR (job `backup`).
 
 ## Restaurar de verdade (procedimento manual)
 
-Reversão de migration = restaurar backup (D4). Com a API parada:
+Reversão de migration = restaurar backup (D4). Regras: **primeiro um backup do estado atual**
+(nada de `dropdb` sem ele) e a **decifragem acontece na máquina do operador** (`age -d -i` local);
+o dump em claro vai à VPS pelo `ssh`, direto para o `pg_restore`, sem tocar o disco dela. A chave
+privada nunca vai à VPS. Antes, rode `--verifica` no mesmo arquivo (seção acima).
+
+Na máquina do operador, com `VPS=deploy@<IP_DA_VPS>` e `D=/home/deploy/cofre-empresa-api`:
 
 ```bash
-docker compose stop api
-age -d -i cofre-backup.key -o /tmp/cofre.dump backups/cofre-<UTC>.dump.age   # fora da VPS se possível
-docker compose exec -T db dropdb -U cofre_dono cofre
-docker compose exec -T db createdb -U cofre_dono cofre
-docker compose exec -T db pg_restore -U cofre_dono -d cofre --exit-on-error < /tmp/cofre.dump
-shred -u /tmp/cofre.dump
-docker compose up -d
+ssh -p 443 $VPS "cd $D && scripts/cron-backup.sh; cat backups/status"   # 1. backup do estado atual: exige resultado=ok
+ssh -p 443 $VPS "cd $D && docker compose stop api"                     # 2. API parada
+ssh -p 443 $VPS "cd $D && docker compose exec -T db dropdb -U cofre_dono cofre && docker compose exec -T db createdb -U cofre_dono cofre"   # 3. banco vazio
+age -d -i ~/cofre-backup.key backups/cofre-<UTC>.dump.age |
+  ssh -p 443 $VPS "cd $D && docker compose exec -T db pg_restore -U cofre_dono -d cofre --exit-on-error"   # 4.
+ssh -p 443 $VPS "cd $D && docker compose up -d --wait && curl -fsS http://127.0.0.1:8098/api/pronto"     # 5.
 ```
 
-O dump traz os grants para `cofre_app` (o papel já existe no volume). Verifique antes com
-`--verifica` o mesmo arquivo.
+No passo 1 o `cron-backup.sh` carrega o `.env` (destinatário age e destino R2); não siga sem
+`resultado=ok`. Se o passo 4 falhar, repita 3–4 com o backup do passo 1 para voltar ao estado anterior. O dump traz
+os grants para `cofre_app` (o papel já existe no volume). Restaurar exige o mesmo `COFRE_SEGREDO`.
 
 ## Bootstrap
 
 Ver o README: `docker compose up -d --build --wait`, depois `python -m app.cli criar-org` (uma vez
-por instalação; o link de convite do owner sai só nessa saída) e `reemitir-convite` se ele se
+por instalação; em produção `docker compose -p cofre-empresa exec api python -m app.cli criar-org
+--nome "<Empresa>" --email <owner>`; o link de convite do owner sai só nessa saída) e `reemitir-convite` se ele se
 perder antes do aceite.
 
 ## `COFRE_SEGREDO` (pepper)

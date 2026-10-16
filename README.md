@@ -73,6 +73,34 @@ AGE_IDENTITY=chave.key scripts/restaurar.sh backups/cofre-<UTC>.dump.age --verif
 
 Detalhes (retenção 7+4+3, prefixos do R2, guarda de cota de 9 GB): [`docs/operacao.md`](docs/operacao.md).
 
+## Produção (empresarial)
+
+- Domínio: `https://secrets.matheus-alves.dev` (proxy da Cloudflare, SSL Full strict,
+  Authenticated Origin Pulls). Cadeia: Cloudflare → `<IP_DA_VPS>:443` (sslh) → Caddy `:4443` →
+  `/api/*` em `127.0.0.1:8098` (esta API) e o resto em `127.0.0.1:8097` (frontend).
+- Diretório na VPS: `/home/deploy/cofre-empresa-api` (clone da branch `empresarial`), projeto
+  compose `cofre-empresa` (containers `cofre-empresa-db|migrar|api`; `mem_limit` api 512m, db
+  512m). O Postgres não publica porta. Frontend: `/home/deploy/cofre-empresa-front`.
+- `.env` (modo 600, fora do git): `POSTGRES_PASSWORD`, `APP_DB_PASSWORD`, `COFRE_SEGREDO`,
+  `COOKIE_SECURE=true`, `BACKUP_AGE_RECIPIENT` (chave **pública** age),
+  `BACKUP_RCLONE_DEST=r2:secrets-backup`. Cópia dos segredos guardada fora da VPS.
+- **Deploy:** automático. Push (merge) na `empresarial` → workflow `Deploy (empresarial)` roda os
+  testes do `ci.yml` e, se passarem, executa na VPS `deploy-empresarial.sh`
+  (`git reset --hard origin/empresarial`, `docker compose build`, `up -d --wait`, falha se
+  `/api/pronto` não responder 200). Manual: `ssh deploy@<IP_DA_VPS> /home/deploy/cofre-empresa-api/deploy-empresarial.sh`.
+- **Rollback:** `ssh deploy@<IP_DA_VPS> /home/deploy/cofre-empresa-api/deploy-empresarial.sh <sha>`
+  (faz `git reset --hard <sha>` e o mesmo build/subida). Migrations são forward-only: se o
+  commit ruim aplicou migration, voltar o código não volta o banco; aí é restaurar backup
+  ([`docs/operacao.md`](docs/operacao.md)). O próximo push na `empresarial` volta a implantar a ponta.
+- **Organização inicial** (uma vez, depois do primeiro deploy):
+  `docker compose -p cofre-empresa exec api python -m app.cli criar-org --nome "<Empresa>" --email <owner>`
+  e entregar ao owner `https://secrets.matheus-alves.dev/#/convite/<token>`.
+- **Backup:** cron diário às 03:30 UTC (`scripts/instalar-cron.sh`, idempotente) →
+  `scripts/cron-backup.sh` → `scripts/backup.sh`; log em `backups/backup.log`, falha marcada em
+  `backups/ultimo_falhou`. Verificar restauração na máquina do operador (a chave privada nunca
+  vai à VPS): [`docs/operacao.md`](docs/operacao.md#verificar-a-restauração-scriptsrestaurarsh---verifica).
+- Saúde: `curl -fsS https://secrets.matheus-alves.dev/api/saude` e `/api/pronto`.
+
 ## Documentação
 
 - [`docs/seguranca.md`](docs/seguranca.md): modelo de ameaças, riscos aceitos (inclusive "o servidor

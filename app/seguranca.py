@@ -125,13 +125,39 @@ def fingerprint(chave_publica: bytes) -> str:
     return " ".join(h[i : i + 4] for i in range(0, 32, 4))
 
 
-def origem(request: Request) -> dict:
-    """ip/user_agent para eventos e sessões (ip já vem do X-Forwarded-For via uvicorn)."""
-    host = request.client.host if request.client else None
+def _gateway_padrao(route: str = "/proc/net/route") -> str | None:
+    """Gateway da rota padrão do container = o host Docker. Com a porta publicada só em
+    127.0.0.1, toda conexão que chega por ele vem de um processo local do host (o Caddy)."""
     try:
-        ip = str(ipaddress.ip_address(host))
+        with open(route) as f:
+            for linha in f.readlines()[1:]:
+                campos = linha.split()
+                if len(campos) > 2 and campos[1] == "00000000":
+                    return str(ipaddress.IPv4Address(int(campos[2], 16).to_bytes(4, "little")))
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+# Peers que podem informar o IP do cliente: loopback e o host Docker (gateway). A confiança no
+# CF-Connecting-IP vale porque o Caddy só aceita conexões da Cloudflare (Authenticated Origin
+# Pulls); ver docs/seguranca.md.
+PROXIES_LOCAIS = frozenset(ip for ip in ("127.0.0.1", "::1", _gateway_padrao()) if ip)
+
+
+def _ip(valor: str | None) -> str | None:
+    try:
+        return str(ipaddress.ip_address((valor or "").strip()))
     except ValueError:
-        ip = None
+        return None
+
+
+def origem(request: Request) -> dict:
+    """ip/user_agent para eventos, sessões e limites por IP. O IP é o do peer, salvo quando o
+    peer é o proxy local e manda um CF-Connecting-IP válido (aí vale o do cliente real)."""
+    ip = _ip(request.client.host if request.client else None)
+    if ip in PROXIES_LOCAIS:
+        ip = _ip(request.headers.get("cf-connecting-ip")) or ip
     return {"ip": ip, "user_agent": (request.headers.get("user-agent") or "")[:300] or None}
 
 
