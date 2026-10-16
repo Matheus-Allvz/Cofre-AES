@@ -11,9 +11,11 @@ import psycopg
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from psycopg_pool import PoolTimeout
+from starlette.requests import Request as RequestAsgi
 from starlette.requests import cookie_parser
 
-from app import config, db, erros, logs, seguranca
+from app import auditoria, config, db, erros, logs, seguranca
+from app.rotas import auditoria as rota_auditoria
 from app.rotas import auth, cofre, conta, convites, membros, org
 
 logs.configurar()
@@ -37,6 +39,7 @@ app.include_router(conta.rota, prefix="/api/v1")
 app.include_router(org.rota, prefix="/api/v1")
 app.include_router(membros.rota, prefix="/api/v1")
 app.include_router(cofre.rota, prefix="/api/v1")
+app.include_router(rota_auditoria.rota, prefix="/api/v1")
 
 
 @app.middleware("http")
@@ -61,11 +64,13 @@ async def requisicao(request: Request, call_next):
 
 LIMITE_CORPO = 256 * 1024
 LIMITE_GRANDE = 20 * 1024 * 1024
-# Rotação (coleção inteira recifrada) e envelopes de owner para todas as coleções.
+# Rotação (coleção inteira recifrada; exige `gerenciar` nela) e envelopes de owner para todas
+# as coleções (promover a owner / reativar owner: só owner faz, então só owner ganha o limite).
 ROTAS_GRANDES = re.compile(
-    r"^(POST /api/v1/colecoes/[^/]+/rotacionar|PUT /api/v1/membros/[^/]+/papel"
+    r"^(POST /api/v1/colecoes/(?P<colecao>[^/]+)/rotacionar|PUT /api/v1/membros/[^/]+/papel"
     r"|POST /api/v1/membros/[^/]+/reativar)$"
 )
+log_corpo = logging.getLogger("cofre.corpo")
 # ponytail: um corpo grande (> 256 KiB) por vez no processo (o parse JSON de 20 MiB pesa
 # várias vezes isso, ver mem_limit); o segundo recebe 503 ocupado + Retry-After e o cliente
 # repete. Fila por usuário se rotações simultâneas virarem rotina.
@@ -75,6 +80,39 @@ MAX_GRANDES = 1
 PRAZO_CORPO_S = float(os.environ.get("COFRE_PRAZO_CORPO_S", "60"))
 _grandes = 0
 _trava_grandes = threading.Lock()
+
+
+def _registrar_recusa(scope, status: int, codigo: str, sessao) -> None:
+    """408/413/503 do limite de corpo: log estruturado (com usuario_id quando a sessão foi
+    consultada) e, para 408/503 de usuário autenticado, evento de auditoria. Nunca o corpo."""
+    usuario_id = sessao and str(sessao[0])
+    log_corpo.warning(
+        "corpo_recusado",
+        extra={
+            "metodo": scope["method"],
+            "rota": scope["path"],
+            "status": status,
+            "codigo": codigo,
+            "usuario_id": usuario_id,
+        },
+    )
+    if sessao is None or status == 413:
+        return
+    try:
+        with db.transacao(scope["app"].state.pool) as conn:
+            auditoria.registrar(
+                conn,
+                org_id=sessao[1],
+                ator_id=sessao[0],
+                tipo="requisicao.recusada",
+                resultado="falha",
+                alvo_tipo="rota",
+                alvo_id=f"{scope['method']} {scope['path']}",
+                meta={"status": status, "codigo": codigo},
+                **seguranca.origem(RequestAsgi(scope)),
+            )
+    except Exception:  # a resposta de erro sai mesmo sem o evento
+        log_corpo.exception("evento_recusa_falhou")
 
 
 async def _erro(send, status: int, codigo: str, extra=()) -> None:
@@ -92,10 +130,11 @@ async def _erro(send, status: int, codigo: str, extra=()) -> None:
 
 class LimiteCorpo:
     """Limite global do corpo, conferido no Content-Length e contado no stream (chunked):
-    256 KiB. 20 MiB só nas ROTAS_GRANDES e só para sessão VÁLIDA (consultada no banco antes de
-    ler o corpo), um corpo grande por vez e com prazo de leitura (PRAZO_CORPO_S): estourou →
-    408 e a vaga é liberada. Sem isso, POSTs de 150 MB sem cookie matavam a API por OOM e um
-    cookie qualquer segurava a vaga com um corpo enviado devagar."""
+    256 KiB. 20 MiB só nas ROTAS_GRANDES e só para sessão VÁLIDA com a permissão da rota
+    (consultadas no banco, numa consulta, antes de ler o corpo), um corpo grande por vez e com
+    prazo de leitura (PRAZO_CORPO_S): estourou → 408 e a vaga é liberada. Sem isso, POSTs de
+    150 MB sem cookie matavam a API por OOM e um cookie qualquer segurava a vaga com um corpo
+    enviado devagar."""
 
     def __init__(self, app):
         self.app = app
@@ -106,22 +145,35 @@ class LimiteCorpo:
             return await asgi(scope, receive, send)
         headers = dict(scope["headers"])
         tamanho = headers.get(b"content-length")
+        sessao = None  # (usuario_id, org_id, permitido) quando a sessão foi consultada
+
+        async def recusar(status, codigo, extra=()):
+            await asyncio.to_thread(_registrar_recusa, scope, status, codigo, sessao)
+            await _erro(send, status, codigo, extra)
+
         if tamanho is not None and not tamanho.isdigit():
-            return await _erro(send, 413, "corpo_grande")
+            return await recusar(413, "corpo_grande")
         # Só quem pode passar do limite pequeno (Content-Length acima dele ou chunked) numa rota
         # grande custa a consulta da sessão; troca de papel comum segue sem banco nem fila.
         grande = False
-        if (tamanho is None or int(tamanho) > LIMITE_CORPO) and ROTAS_GRANDES.match(
+        rota_grande = (tamanho is None or int(tamanho) > LIMITE_CORPO) and ROTAS_GRANDES.match(
             f"{scope['method']} {scope['path']}"
-        ):
+        )
+        if rota_grande:
             cookie = headers.get(b"cookie", b"").decode("latin-1")
             token = cookie_parser(cookie).get(seguranca.COOKIE)
-            grande = bool(token) and await asyncio.to_thread(
-                seguranca.sessao_valida, scope["app"].state.pool, token
-            )
+            if token:
+                sessao = await asyncio.to_thread(
+                    seguranca.sessao_corpo_grande,
+                    scope["app"].state.pool,
+                    token,
+                    rota_grande["colecao"],
+                    scope["path"].endswith("/rotacionar"),
+                )
+            grande = bool(sessao and sessao[2])
         limite = LIMITE_GRANDE if grande else LIMITE_CORPO
         if tamanho is not None and int(tamanho) > limite:
-            return await _erro(send, 413, "corpo_grande")
+            return await recusar(413, "corpo_grande")
         lidos = 0
         completo = respondeu = False
         erro = None  # (status, código) que substitui a resposta do app
@@ -154,7 +206,7 @@ class LimiteCorpo:
             if msg["type"] == "http.response.start":
                 respondeu = True
                 if erro:
-                    return await _erro(send, *erro)
+                    return await recusar(*erro)
             if not erro:
                 await send(msg)
 
@@ -164,7 +216,7 @@ class LimiteCorpo:
             except Exception:
                 if not erro or respondeu:
                     raise
-                await _erro(send, *erro)
+                await recusar(*erro)
 
         if not grande:
             return await seguir()
@@ -173,7 +225,7 @@ class LimiteCorpo:
             livre = _grandes < MAX_GRANDES
             _grandes += livre
         if not livre:
-            return await _erro(send, 503, "ocupado", [(b"retry-after", b"5")])
+            return await recusar(503, "ocupado", [(b"retry-after", b"5")])
         try:
             await seguir()
         finally:

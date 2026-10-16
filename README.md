@@ -29,7 +29,7 @@ Convite do owner inicial perdido ou vencido (só enquanto ele não aceitou; o an
 docker compose run --rm -T api python -m app.cli reemitir-convite --email dono@empresa.com
 ```
 
-A política padrão exige MFA (TOTP): no primeiro login o owner é levado a configurá-lo.
+MFA (TOTP) é opcional por padrão desde a Fase 7; a org pode exigi-lo em `PUT /org/politica`.
 
 O papel `cofre_app` é criado por `db/init/` só no primeiro boot (volume vazio).
 Para recriar o banco do zero: `docker compose down -v`.
@@ -64,5 +64,20 @@ Outro Postgres de teste: `TEST_DATABASE_URL_DONO=postgresql://...`.
   segue a conta ~60 MiB + concorrência × 64 MiB, com folga (ver `docker-compose.yml`). Carga de
   prova: `python scripts/carga_login.py --projeto <projeto compose> --n 40`.
 
-Riscos aceitos e controles: [`docs/seguranca.md`](docs/seguranca.md).
+## Backup e restauração
+
+```bash
+BACKUP_AGE_RECIPIENT=age1... scripts/backup.sh          # pg_dump cifrado com age + retenção + R2
+AGE_IDENTITY=chave.key scripts/restaurar.sh backups/cofre-<UTC>.dump.age --verifica
+```
+
+Detalhes (retenção 7+4+3, prefixos do R2, guarda de cota de 9 GB): [`docs/operacao.md`](docs/operacao.md).
+
+## Documentação
+
+- [`docs/seguranca.md`](docs/seguranca.md): modelo de ameaças, riscos aceitos (inclusive "o servidor
+  serve o JS" e as limitações de RF-O05) e matriz requisito → controle.
+- [`docs/operacao.md`](docs/operacao.md): backup, restauração, bootstrap e `COFRE_SEGREDO`.
+- [`docs/ropa.md`](docs/ropa.md): registro das operações de tratamento (LGPD).
+- [`docs/incidente.md`](docs/incidente.md): resposta a incidente e prazo de comunicação à ANPD.
 Plano completo, requisitos e decisões: [`docs/plano/`](docs/plano/).

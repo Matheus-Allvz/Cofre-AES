@@ -12,6 +12,8 @@ ignore = ["S101"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S105", "S106", "S108", "S603", "S607"]
+# Tabelas de rota × ator / tipo × ação: uma linha por rota é mais legível que quebrar.
+"tests/test_{matriz_autorizacao,eventos_completos}.py" = ["E501"]
 # Ferramenta local de carga: chama o docker e a URL passada na linha de comando.
 "scripts/*" = ["S310", "S603", "S607"]
 

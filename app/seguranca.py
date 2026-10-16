@@ -188,25 +188,35 @@ def sessao_atual(request: Request) -> Sessao:
 SessaoAtual = Annotated[Sessao, Depends(sessao_atual)]
 
 
-def sessao_valida(pool, token: str) -> bool:
-    """Para o limite de corpo (antes de ler o corpo): o token é de uma sessão viva (não revogada,
-    dentro da ociosa e da absoluta) de usuário ATIVO sem MFA pendente. Só consulta, não renova."""
+def sessao_corpo_grande(pool, token: str, colecao: str | None, rotacao: bool):
+    """Para o limite de corpo (antes de ler o corpo), numa consulta: o token é de uma sessão viva
+    (não revogada, dentro da ociosa e da absoluta) de usuário ATIVO sem MFA pendente, e ele tem a
+    permissão da rota grande: `gerenciar` na coleção (`rotacao`) ou papel owner (promover a owner
+    e reativar owner, as únicas que mandam envelopes de todas as coleções). Devolve
+    (usuario_id, org_id, permitido) ou None. Só consulta, não renova a sessão."""
+    try:
+        colecao = colecao and str(UUID(colecao))
+    except ValueError:
+        colecao = None  # id inválido: sessão conta para o log, mas sem permissão
     agora = relogio.agora()
     with db.transacao(pool) as conn:
-        return (
-            conn.execute(
-                """SELECT 1 FROM sessoes s
-                   JOIN usuarios u ON u.id = s.usuario_id
-                   JOIN politicas p ON p.org_id = u.org_id
-                   WHERE s.token_hash = %(hash)s AND s.revogada_em IS NULL
-                     AND s.expira_em > %(agora)s
-                     AND s.ultimo_uso > %(agora)s - make_interval(mins => p.inatividade_min)
-                     AND u.estado = 'ativo'
-                     AND NOT (p.mfa_obrigatorio AND u.totp_ultimo_passo IS NULL)""",
-                {"agora": agora, "hash": hash_token(token)},
-            ).fetchone()
-            is not None
-        )
+        return conn.execute(
+            """SELECT u.id, u.org_id,
+                      CASE WHEN %(rotacao)s THEN EXISTS (
+                               SELECT 1 FROM colecao_membros cm
+                               WHERE cm.colecao_id = %(colecao)s::uuid AND cm.usuario_id = u.id
+                                 AND cm.permissao = 'gerenciar')
+                           ELSE u.papel = 'owner' END
+               FROM sessoes s
+               JOIN usuarios u ON u.id = s.usuario_id
+               JOIN politicas p ON p.org_id = u.org_id
+               WHERE s.token_hash = %(hash)s AND s.revogada_em IS NULL
+                 AND s.expira_em > %(agora)s
+                 AND s.ultimo_uso > %(agora)s - make_interval(mins => p.inatividade_min)
+                 AND u.estado = 'ativo'
+                 AND NOT (p.mfa_obrigatorio AND u.totp_ultimo_passo IS NULL)""",
+            {"agora": agora, "hash": hash_token(token), "colecao": colecao, "rotacao": rotacao},
+        ).fetchone()
 
 
 def exigir_papel(*papeis: str):

@@ -580,7 +580,12 @@ def rotacionar(colecao_id: UUID, dados: Rotacao, request: Request, sessao: segur
                 (colecao_id,),
             ).fetchall()
         )
-        if set(envelopes) != membros or set(itens) != set(atuais):
+        # Membros mudaram depois que o cliente montou a rotação (alguém entrou ou saiu): 409, como
+        # chave_ver; o cliente re-sincroniza e refaz. A trava da coleção (FOR UPDATE, também
+        # pega por quem dá ou tira acesso) serializa os dois: não há envelope perdido.
+        if set(envelopes) != membros:
+            raise HTTPException(409, "membros_alterados")
+        if set(itens) != set(atuais):
             raise HTTPException(422, "rotacao_incompleta")
         # Item editado depois que o cliente montou a rotação: 409 (ele re-sincroniza e refaz),
         # antes de comparar as versões, que também mudaram com a edição.
