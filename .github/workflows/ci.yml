@@ -56,3 +56,42 @@ jobs:
 
       - name: Docker build
         run: docker build .
+
+  # RNF-05/06: backup real (pg_dump | age) → restaurar.sh --verifica num Postgres temporário;
+  # arquivo truncado tem de falhar. Chave age gerada no próprio job; sem destino externo.
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: age
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq age
+
+      - name: Sobe o compose com uma org
+        run: |
+          {
+            echo "POSTGRES_PASSWORD=$(openssl rand -hex 24)"
+            echo "APP_DB_PASSWORD=$(openssl rand -hex 24)"
+            echo "COFRE_SEGREDO=$(openssl rand -base64 32)"
+          } > .env
+          docker compose up -d --build --wait
+          docker compose run --rm -T api python -m app.cli criar-org --nome "Org CI" --email dono@ci.invalid > /dev/null
+
+      - name: backup → restaurar --verifica → truncado falha
+        run: |
+          age-keygen -o "$RUNNER_TEMP/backup.key" 2> /dev/null
+          export BACKUP_AGE_RECIPIENT=$(age-keygen -y "$RUNNER_TEMP/backup.key")
+          BACKUP_RCLONE_DEST= scripts/backup.sh
+          cat backups/status
+          arquivo=$(ls backups/cofre-*.dump.age)
+          test "$(cat backups/*.age | grep -c SENT- || true)" = 0
+          AGE_IDENTITY="$RUNNER_TEMP/backup.key" scripts/restaurar.sh "$arquivo" --verifica
+          meio=backups/cofre-20000101T000000Z
+          head -c $(( $(wc -c < "$arquivo") / 2 )) "$arquivo" > "$meio.dump.age"
+          cp "${arquivo%.dump.age}.manifesto.age" "$meio.manifesto.age"
+          if AGE_IDENTITY="$RUNNER_TEMP/backup.key" scripts/restaurar.sh "$meio.dump.age" --verifica; then
+            echo "arquivo truncado passou na verificação" >&2; exit 1
+          fi
+
+      - if: always()
+        run: docker compose down -v
