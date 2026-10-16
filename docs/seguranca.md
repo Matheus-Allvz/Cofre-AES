@@ -41,8 +41,12 @@ riscos residuais conhecidos e as decisões que os aceitam.
 
 - **Limite de corpo (Fase 7).** Antes de qualquer parse, um middleware ASGI confere o
   `Content-Length` e conta os bytes do stream (inclusive `Transfer-Encoding: chunked`): 256 KiB
-  por padrão; 20 MiB só em `rotacionar`, promoção e reativação de owner, e só com cookie de
-  sessão. Acima → `413 {"erro":"corpo_grande"}`. Corpo acima de 256 KiB é um por vez (o
+  por padrão; 20 MiB só em `rotacionar`, promoção e reativação de owner, e só para sessão
+  **válida** (o hash do cookie é consultado em `sessoes` antes de ler o corpo; usuário `ativo`,
+  sem MFA pendente). Cookie inventado, revogado ou expirado fica nos 256 KiB. Corpo grande tem
+  prazo de leitura (`COFRE_PRAZO_CORPO_S`, padrão 60 s): estourou → `408 corpo_lento` e a vaga
+  é liberada, então um envio lento autenticado atrasa as outras rotações no máximo esse prazo,
+  e com sessão identificada. Acima → `413 {"erro":"corpo_grande"}`. Corpo acima de 256 KiB é um por vez (o
   segundo recebe `503 ocupado` + `Retry-After: 5`), porque o parse JSON de 20 MiB ocupa várias
   vezes isso em memória. Antes, três POSTs de 150 MB sem cookie (até no `/prelogin`) derrubavam
   a API por OOM. Carga reproduzível: `scripts/carga_corpo.py` (6 POSTs de 150 MB em paralelo,
@@ -123,6 +127,10 @@ riscos residuais conhecidos e as decisões que os aceitam.
 
 ## Compartilhamento, revogação e offboarding (Fase 7)
 
+- **Dados para a rotação.** `GET /colecoes/{id}/rotacao` (`gerenciar`) entrega membros, todos os
+  itens com `segredo_cif` (inclusive lixeira) e todas as versões numa resposta, com um evento
+  `colecao.rotacao_iniciada` (contagens). Quem rotaciona vê todos os segredos (precisa, para
+  recifrar); o evento registra isso de forma distinguível de uma revelação humana.
 - **Rotação atômica (RF-U04).** `POST /colecoes/{id}/rotacionar` numa transação: coleção
   `FOR UPDATE`, itens `FOR UPDATE`, todas as validações (membros atuais, todos os itens inclusive
   lixeira na versão atual, todas as versões) antes da primeira escrita. Duas rotações
