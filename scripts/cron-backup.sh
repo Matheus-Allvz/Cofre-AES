@@ -7,7 +7,7 @@
 # Push do Uptime Kuma, heartbeat de 25 h): o Kuma alerta tanto na falha quanto no silêncio (cron
 # que nem rodou). A URL tem o token do monitor e não é impressa.
 set -uo pipefail
-export PATH=/usr/local/bin:/usr/bin:/bin:$PATH
+export PATH=$PATH:/usr/local/bin:/usr/bin:/bin # o cron só traz /usr/bin:/bin
 RAIZ=$(cd "$(dirname "$0")/.." && pwd)
 DIR=${BACKUP_DIR:-$RAIZ/backups}
 LOG=$DIR/backup.log

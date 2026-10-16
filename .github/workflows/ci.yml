@@ -109,5 +109,5 @@ jobs:
           username: nao-existe-fingerprint
           key: ${{ env.K }}
           port: 22
-          fingerprint: SHA256:YzGhe0UtmjDjvhkEiIi56xPcrwuvURWkUtn6seGyUYI
+          fingerprint: SHA256:/96TaOB9WqsHnb9S29Yy2fvq8yVY9oE1uwzMxCs+KRY
           script: "true"

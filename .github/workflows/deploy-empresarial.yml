@@ -33,7 +33,8 @@ jobs:
           username: ${{ secrets.EMP_DEPLOY_SSH_USER }}
           key: ${{ secrets.EMP_DEPLOY_SSH_KEY }}
           port: 22
-          # Chave ED25519 do host (ssh-keyscan -p 22 + ssh-keygen -lf, conferida com o known_hosts).
-          fingerprint: SHA256:YzGhe0UtmjDjvhkEiIi56xPcrwuvURWkUtn6seGyUYI
+          # Chave ECDSA do host, a que o cliente Go da action negocia (ssh-keyscan -p 22 + ssh-keygen -lf,
+          # conferida com o known_hosts).
+          fingerprint: SHA256:/96TaOB9WqsHnb9S29Yy2fvq8yVY9oE1uwzMxCs+KRY
           command_timeout: 15m
           script: ${{ github.sha }}
