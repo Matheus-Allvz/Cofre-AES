@@ -96,10 +96,3 @@ jobs:
 
       - if: always()
         run: docker compose down -v
-
-  alcance-ssh-temporario:
-    runs-on: ubuntu-latest
-    steps:
-      - env:
-          H: ${{ secrets.CI_DEPLOY_SSH_HOST }}
-        run: for p in 22 443; do timeout 10 bash -c "echo > /dev/tcp/$H/$p" && echo "porta $p ok" || echo "porta $p FALHOU"; done
