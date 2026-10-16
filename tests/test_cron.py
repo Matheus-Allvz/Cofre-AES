@@ -36,11 +36,18 @@ def projeto(tmp_path):
         'if [[ $1 == -l ]]; then [[ -f $f ]] && cat "$f" || exit 1; else cat > "$f"; fi\n'
     )
     crontab.chmod(0o755)
+    curl = bin_ / "curl"  # anota cada chamada; falha se STUB_CURL_RC != 0
+    curl.write_text('#!/usr/bin/env bash\necho "$*" >> "$CURL_LOG"\nexit "${STUB_CURL_RC:-0}"\n')
+    curl.chmod(0o755)
     return tmp_path
 
 
 def rodar(proj: Path, script: str, **env) -> subprocess.CompletedProcess:
-    base = {"PATH": f"{proj / 'bin'}:/usr/bin:/bin", "CRONTAB_ARQ": str(proj / "crontab.txt")}
+    base = {
+        "PATH": f"{proj / 'bin'}:/usr/bin:/bin",
+        "CRONTAB_ARQ": str(proj / "crontab.txt"),
+        "CURL_LOG": str(proj / "curl.log"),
+    }
     return subprocess.run(
         ["bash", str(proj / "scripts" / script)],
         env=base | env,
@@ -94,3 +101,31 @@ def test_instalar_cron_idempotente_e_preserva_outras_linhas(projeto):
 def test_instalar_cron_com_crontab_vazio(projeto):
     assert rodar(projeto, "instalar-cron.sh").returncode == 0
     assert (projeto / "crontab.txt").read_text() == f"30 3 * * * {projeto}/scripts/cron-backup.sh\n"
+
+
+def pings(proj: Path) -> list[str]:
+    log = proj / "curl.log"
+    return log.read_text().splitlines() if log.exists() else []
+
+
+def test_heartbeat_so_em_sucesso_e_com_url(projeto):
+    url = "https://status.exemplo.invalid/api/push/TOKEN?status=up"
+    (projeto / ".env").write_text(f"BACKUP_AGE_RECIPIENT=age1abc\nBACKUP_PING_URL={url}\n")
+    assert rodar(projeto, "cron-backup.sh", STUB_RC="4").returncode == 4
+    assert pings(projeto) == []  # falha: sem ping (o Kuma alerta pelo silêncio)
+    assert rodar(projeto, "cron-backup.sh", STUB_RC="0").returncode == 0
+    assert pings(projeto) == [f"-fsS -m 10 -o /dev/null {url}"]
+    assert "TOKEN" not in (projeto / "backups" / "backup.log").read_text()
+
+
+def test_heartbeat_vazio_desativa_e_falha_do_ping_nao_falha_o_backup(projeto):
+    (projeto / ".env").write_text("BACKUP_AGE_RECIPIENT=age1abc\nBACKUP_PING_URL=\n")
+    assert rodar(projeto, "cron-backup.sh", STUB_RC="0").returncode == 0
+    assert pings(projeto) == []
+    (projeto / ".env").write_text(
+        "BACKUP_AGE_RECIPIENT=age1abc\nBACKUP_PING_URL=http://x.invalid/p\n"
+    )
+    r = rodar(projeto, "cron-backup.sh", STUB_RC="0", STUB_CURL_RC="7")
+    assert r.returncode == 0
+    assert not (projeto / "backups" / "ultimo_falhou").exists()
+    assert "AVISO: heartbeat" in (projeto / "backups" / "backup.log").read_text()

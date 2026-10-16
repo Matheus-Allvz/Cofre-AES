@@ -1,6 +1,9 @@
-# Deploy de produção (Fase 9): push na empresarial → testes (ci.yml) → SSH na VPS →
-# /home/deploy/cofre-empresa-api/deploy-empresarial.sh. Reaproveita os secrets
-# CI_DEPLOY_SSH_HOST/USER/KEY. A branch main e o workflow deploy.yml dela não mudam.
+# Deploy de produção (Fase 9): push na empresarial → testes (ci.yml) → SSH na VPS com a chave
+# exclusiva deste deploy. No authorized_keys do host essa chave tem forced command
+# /home/deploy/cofre-empresa-api/deploy-empresarial.sh (no-pty, sem forwarding): o único comando enviado é o
+# SHA do push, que o script valida. Secrets EMP_DEPLOY_SSH_HOST/USER/KEY no Environment
+# producao-empresarial, liberado só para a branch empresarial. Os secrets CI_DEPLOY_SSH_* e o
+# deploy.yml da main (versão acadêmica) não são usados aqui.
 name: Deploy (empresarial)
 
 on:
@@ -21,13 +24,16 @@ jobs:
   deploy:
     needs: testes
     runs-on: ubuntu-latest
+    environment: producao-empresarial
     steps:
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.2.5
+        uses: appleboy/ssh-action@0ff4204d59e8e51228ff73bce53f80d53301dee2 # v1.2.5
         with:
-          host: ${{ secrets.CI_DEPLOY_SSH_HOST }}
-          username: ${{ secrets.CI_DEPLOY_SSH_USER }}
-          key: ${{ secrets.CI_DEPLOY_SSH_KEY }}
+          host: ${{ secrets.EMP_DEPLOY_SSH_HOST }}
+          username: ${{ secrets.EMP_DEPLOY_SSH_USER }}
+          key: ${{ secrets.EMP_DEPLOY_SSH_KEY }}
           port: 22
+          # Chave ED25519 do host (ssh-keyscan -p 22 + ssh-keygen -lf, conferida com o known_hosts).
+          fingerprint: SHA256:YzGhe0UtmjDjvhkEiIi56xPcrwuvURWkUtn6seGyUYI
           command_timeout: 15m
-          script: /home/deploy/cofre-empresa-api/deploy-empresarial.sh
+          script: ${{ github.sha }}

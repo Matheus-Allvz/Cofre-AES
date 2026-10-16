@@ -64,9 +64,14 @@ crontab -l | grep cron-backup
 `scripts/cron-backup.sh` carrega o `.env` do projeto (sem imprimir valores), roda o `backup.sh` e
 anexa a saída a `backups/backup.log` (rotacionado ao passar de 1 MiB: `backup.log.1` … `.5`). Em
 saída ≠ 0 grava `backups/ultimo_falhou` (`<UTC> exit=<n>`); um backup bem-sucedido o remove. O
-alerta é esse arquivo: confira `ls backups/ultimo_falhou` e `cat backups/status`. Não há push de
-alerta: o `ntfy` da VPS tem `auth-default-access: deny-all`, e publicar exigiria criar usuário e
-token próprios lá (fica como melhoria; não reaproveitar credencial de outro projeto).
+alerta local é esse arquivo: confira `ls backups/ultimo_falhou` e `cat backups/status`.
+
+**Heartbeat (alerta externo):** em sucesso, se `BACKUP_PING_URL` no `.env` não for vazia, o
+`cron-backup.sh` faz `curl -fsS -m 10` nela (a URL não é impressa; falha do ping só gera `AVISO` no
+log, não falha o backup). O operador cria no Uptime Kuma um monitor **Push** com heartbeat de
+**25 h** e cola a URL de push no `.env` (`BACKUP_PING_URL=https://status.matheus-alves.dev/api/push/<token>?status=up&msg=OK`).
+Sem ping dentro de 25 h (backup falhou, cron não rodou, host fora), o Kuma alerta pelos canais
+dele. O `ntfy` da VPS não é usado (`auth-default-access: deny-all`; exigiria credencial própria).
 
 ### Guarda de cota do R2 (nunca passar de 90% do plano grátis)
 

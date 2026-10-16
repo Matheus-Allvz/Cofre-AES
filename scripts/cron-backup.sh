@@ -3,6 +3,9 @@
 # o backup.sh; nenhum valor é impresso), roda scripts/backup.sh com a saída anexada a
 # backups/backup.log (rotacionado ao passar de 1 MiB, 5 gerações) e, em saída ≠ 0, grava
 # backups/ultimo_falhou ("<UTC> exit=<n>"); um backup bem-sucedido remove esse arquivo.
+# Heartbeat: só em sucesso, se BACKUP_PING_URL (no .env) não for vazia, faz um GET nela (monitor
+# Push do Uptime Kuma, heartbeat de 25 h): o Kuma alerta tanto na falha quanto no silêncio (cron
+# que nem rodou). A URL tem o token do monitor e não é impressa.
 set -uo pipefail
 export PATH=/usr/local/bin:/usr/bin:/bin:$PATH
 RAIZ=$(cd "$(dirname "$0")/.." && pwd)
@@ -22,7 +25,11 @@ fi
   set -a
   . "$RAIZ/.env" || exit 2
   set +a
-  exec "$RAIZ/scripts/backup.sh"
+  "$RAIZ/scripts/backup.sh" || exit
+  if [[ -n ${BACKUP_PING_URL-} ]]; then
+    curl -fsS -m 10 -o /dev/null "$BACKUP_PING_URL" 2>/dev/null ||
+      echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) backup: AVISO: heartbeat (BACKUP_PING_URL) falhou"
+  fi
 ) >>"$LOG" 2>&1
 rc=$?
 
