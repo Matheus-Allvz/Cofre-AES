@@ -44,12 +44,21 @@ requisito → controle (RNF-15b, no fim). Operação (backup, restauração, seg
   20 req/min, mantém as duas vagas do Argon2 ocupadas e usuários legítimos passam a receber
   `503 ocupado` enquanto durar o ataque. Não há perda de dados nem de memória (o teto protege o
   container). Mitigação adicional fica no proxy (Fase 9).
-- **`X-Forwarded-For` forjado sem proxy.** A API roda com `--proxy-headers
-  --forwarded-allow-ips '*'` e o limite por IP usa o IP que o uvicorn extrai do XFF. Isso só é
-  seguro com o Caddy na frente sobrescrevendo o XFF. Se a porta 8098 ficar alcançável sem o
-  proxy, um cliente troca o XFF a cada requisição e contorna o limite por IP (o limite por conta
-  continua valendo). Hoje a porta só escuta em `127.0.0.1`; a Fase 9 fecha o ponto (configuração
-  do Caddy confirmada e `--forwarded-allow-ips` restrito ao proxy).
+- **IP do cliente atrás da Cloudflare (Fase 9).** Cadeia: Cloudflare → sslh `:443` → Caddy
+  `:4443` → API em `127.0.0.1:8098`. Dentro do container o peer de toda requisição do Caddy é o
+  gateway do Docker (o host), e o `X-Forwarded-For` não identifica o cliente. Regra
+  (`seguranca.origem`, usada no limite por IP, em eventos e em sessões): o IP é o do peer; **só**
+  quando o peer é o proxy local (loopback ou o gateway padrão do container, lido de
+  `/proc/net/route`) e o header `CF-Connecting-IP` traz um IP válido, vale o do header. De
+  qualquer outro peer o header é ignorado; `X-Forwarded-For` nunca é usado; o uvicorn roda com
+  `--no-proxy-headers` (não há mais `--forwarded-allow-ips '*'`). Teste: `tests/test_ip_cliente.py`.
+  **A confiança depende do Authenticated Origin Pulls**: o bloco do Caddy de
+  `secrets.matheus-alves.dev` exige o certificado de cliente da Cloudflare (mTLS), então só a
+  Cloudflare entrega requisições nesse domínio, e ela sobrescreve o `CF-Connecting-IP`. Se o AOP
+  for desligado, qualquer um que alcance `<IP_DA_VPS>:443` direto forja o header e escolhe o
+  próprio IP (contorna o limite por IP e polui `eventos.ip`; o limite por conta continua). Outro
+  cliente da Cloudflare que aponte um domínio dele para a VPS chega com outro SNI/Host e não cai
+  neste bloco. A porta 8098 escuta só em `127.0.0.1`.
 - **Purga de `limites`.** Sem job externo: as linhas sem bloqueio vigente e com janela iniciada
   há mais de 15 min são apagadas a cada credencial válida e também quando a janela de um IP/rota
   abre (1ª requisição do minuto em `contar_ip`). Elas seriam recriadas do zero na próxima

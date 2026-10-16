@@ -441,7 +441,7 @@ docker compose up -d --build && curl -fsSI http://127.0.0.1:8097/  # [FE-UP]
    }
    ```
    `sudo caddy validate --config /etc/caddy/Caddyfile && sudo systemctl reload caddy`.
-10. GitHub Actions: confirmar que os secrets `CI_DEPLOY_SSH_HOST/USER/KEY` (BE) e `FRONT_DEPLOY_SSH_HOST/USER/KEY` (FE) existem e funcionam (são reaproveitados; workflows novos só rodam em push na `empresarial`).
+10. GitHub Actions: ~~reaproveitar `CI_DEPLOY_SSH_*`/`FRONT_DEPLOY_SSH_*`~~ — **corrigido na validação da Fase 9**: essas chaves têm forced command para os `deploy.sh` acadêmicos. O deploy empresarial usa chaves exclusivas (forced command `deploy-empresarial.sh`, `no-pty`) e os secrets `EMP_DEPLOY_SSH_HOST/USER/KEY` no Environment `producao-empresarial` (só branch `empresarial`) de cada repo.
 11. Após o primeiro deploy: `docker compose exec api python -m app.cli criar-org --nome "<Empresa>" --email <owner>` e abrir `https://<dominio>/#/convite/<token>`.
 
 **Escopo BE**

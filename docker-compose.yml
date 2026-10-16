@@ -1,6 +1,9 @@
+# Projeto cofre-empresa: não colide com a versão acadêmica (cofre-aes) na mesma VPS.
+name: cofre-empresa
 services:
   db:
     image: postgres:16-alpine
+    container_name: cofre-empresa-db
     restart: unless-stopped
     environment:
       POSTGRES_USER: cofre_dono
@@ -19,6 +22,7 @@ services:
 
   migrar:
     build: .
+    container_name: cofre-empresa-migrar
     image: cofre-empresarial-api:local
     command: ["python", "-m", "app.migrar"]
     restart: "no"
@@ -33,6 +37,7 @@ services:
 
   api:
     build: .
+    container_name: cofre-empresa-api
     image: cofre-empresarial-api:local
     restart: unless-stopped
     environment:
@@ -47,9 +52,9 @@ services:
       migrar:
         condition: service_completed_successfully
     # Memória: ~60 MiB do processo + COFRE_ARGON2_CONCORRENCIA × 64 MiB do Argon2 (m=65536)
-    # = ~190 MiB com 2 (pico medido: 185 MiB com 60 logins paralelos). 384m = ~2× de folga.
-    # Subir a concorrência exige subir este limite na mesma conta.
-    mem_limit: 384m
+    # = ~190 MiB com 2 (pico medido: 185 MiB com 60 logins paralelos). 512m = ~2,7× de folga
+    # (decisão da Fase 9). Subir a concorrência exige subir este limite na mesma conta.
+    mem_limit: 512m
 
 volumes:
   dados:

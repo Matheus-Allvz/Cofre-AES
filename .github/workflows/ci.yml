@@ -1,10 +1,11 @@
 name: CI
 
+# Em push na empresarial estes jobs rodam chamados por deploy-empresarial.yml (o deploy só
+# acontece se todos passarem); aqui ficam só os PRs.
 on:
   pull_request:
     branches: [empresarial]
-  push:
-    branches: [empresarial]
+  workflow_call:
 
 permissions:
   contents: read

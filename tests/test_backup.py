@@ -159,10 +159,23 @@ def test_sem_destino_externo_backup_local_com_aviso(ambiente):
     assert chamadas(ambiente) == []
 
 
-def test_sem_rclone_instalado_backup_local_com_aviso(ambiente):
+def test_destino_definido_sem_rclone_falha(ambiente):
+    """Fase 9: com BACKUP_RCLONE_DEST definido (aqui o padrão), cópia externa impossível é
+    falha (saída 4), nunca ok silencioso; o backup local fica."""
     r = rodar(ambiente, sem=("rclone",))
-    assert r.returncode == 0, r.stderr
+    assert r.returncode == 4, r.stderr
     assert "rclone não instalado" in r.stderr
+    assert status(ambiente).startswith("em=20261014T030000Z resultado=falha motivo=rclone")
+    assert (ambiente / "backups" / "cofre-20261014T030000Z.dump.age").exists()
+    assert not (ambiente / "backups" / "ultimo_ok").exists()
+
+
+def test_destino_definido_com_remoto_ausente_falha(ambiente):
+    r = rodar(ambiente, BACKUP_RCLONE_DEST="outro:bucket")
+    assert r.returncode == 4, r.stderr
+    assert "remoto rclone 'outro' não configurado" in status(ambiente)
+    assert [c.split()[0] for c in chamadas(ambiente)] == ["listremotes"]
+    assert not (ambiente / "backups" / "ultimo_ok").exists()
 
 
 def test_envio_por_prefixo_e_nunca_apaga_no_r2(ambiente):
@@ -179,6 +192,8 @@ def test_envio_por_prefixo_e_nunca_apaga_no_r2(ambiente):
         assert c.split()[0] in {"listremotes", "size", "copyto"}, c  # nada de delete/sync/move
         if c.split()[0] != "listremotes":
             assert "--s3-no-check-bucket" in c
+        if c.split()[0] == "copyto":
+            assert "--s3-no-head" in c and "--no-check-dest" in c  # só PutObject (Class A)
     assert status(ambiente).startswith(
         "em=20261101T030000Z resultado=ok motivo=ok: diario semanal mensal"
     )

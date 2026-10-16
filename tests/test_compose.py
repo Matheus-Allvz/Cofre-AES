@@ -39,3 +39,23 @@ def test_dockerfile_nao_root_e_healthcheck():
     assert usuarios and usuarios[-1] not in ("root", "0")
     assert any(linha.startswith("HEALTHCHECK") for linha in linhas)
     assert "/api/saude" in "\n".join(linhas)
+
+
+def test_projeto_e_containers_de_producao():
+    # Fase 9: não colide com a versão acadêmica (cofre-aes) na mesma VPS.
+    assert COMPOSE["name"] == "cofre-empresa"
+    assert {n: s["container_name"] for n, s in SERVICOS.items()} == {
+        "db": "cofre-empresa-db",
+        "migrar": "cofre-empresa-migrar",
+        "api": "cofre-empresa-api",
+    }
+    assert SERVICOS["api"]["mem_limit"] == "512m"
+    assert SERVICOS["db"]["mem_limit"] == "512m"
+    assert all(SERVICOS[n]["restart"] == "unless-stopped" for n in ("db", "api"))
+
+
+def test_uvicorn_sem_proxy_headers():
+    # O IP do cliente vem de CF-Connecting-IP só via proxy local (app/seguranca.py), nunca do XFF.
+    dockerfile = (RAIZ / "Dockerfile").read_text(encoding="utf-8")
+    assert "--no-proxy-headers" in dockerfile
+    assert "forwarded-allow-ips" not in dockerfile

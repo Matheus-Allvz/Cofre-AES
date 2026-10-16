@@ -7,9 +7,12 @@
 #   scripts/backup.sh --retencao < nomes      # imprime quais arquivos a retenção mantém
 #
 # Variáveis: BACKUP_AGE_RECIPIENT (obrigatória), BACKUP_DIR (padrão backups/), COMPOSE_PROJECT
-# (projeto do compose; padrão: o do diretório), BACKUP_RCLONE_DEST (padrão r2:secrets-backup;
-# vazia = só local), BACKUP_LIMITE_BYTES (padrão 9000000000 = 90% dos 10 GB grátis do R2).
-# Saída: 0 ok; 2 configuração; 3 cota do destino; 4 falha no envio/medição do destino.
+# (projeto do compose; padrão: o do compose), BACKUP_RCLONE_DEST (padrão r2:secrets-backup;
+# vazia = só local, explicitamente), BACKUP_LIMITE_BYTES (padrão 9000000000 = 90% dos 10 GB
+# grátis do R2).
+# Saída: 0 ok; 1 comando falhou (pg_dump, age, docker...); 2 configuração; 3 cota do destino;
+# 4 destino externo indisponível (rclone/remoto ausente) ou falha ao medir/enviar.
+# Com destino definido (inclusive o padrão), cópia externa que não acontece é falha, nunca ok.
 # O script nunca apaga nada no R2 (só copyto de arquivo novo); a validade lá é das regras de
 # ciclo de vida do bucket (diario/ 8 dias, semanal/ 35, mensal/ 100).
 set -euo pipefail
@@ -85,16 +88,16 @@ for f in "$DIR"/cofre-*.dump.age; do
   fi
 done
 
-# Cópia externa (R2). Sem destino utilizável: o backup local vale, com aviso.
+# Cópia externa (R2). Só BACKUP_RCLONE_DEST vazio (explícito) dispensa a cópia; com destino
+# definido, rclone ou remoto ausente é falha (o backup local fica).
 externo="ok"
 remoto=${DEST%%:*}
 if [[ -z $DEST ]]; then
   externo="ignorado: BACKUP_RCLONE_DEST vazio"
-elif ! command -v rclone >/dev/null; then
-  externo="ignorado: rclone não instalado"
-elif ! rclone listremotes | grep -qxF "$remoto:"; then
-  externo="ignorado: remoto rclone '$remoto' não configurado"
 else
+  command -v rclone >/dev/null || falhar 4 "rclone não instalado (destino $DEST; backup local mantido)"
+  rclone listremotes | grep -qxF "$remoto:" ||
+    falhar 4 "remoto rclone '$remoto' não configurado (backup local mantido)"
   prefixos=(diario)
   [[ $(date -u -d "${AGORA:0:8}" +%u) == 7 ]] && prefixos+=(semanal)
   [[ ${AGORA:6:2} == 01 ]] && prefixos+=(mensal)
@@ -108,7 +111,7 @@ else
   fi
   for p in "${prefixos[@]}"; do
     for f in "$NOME.dump.age" "$NOME.manifesto.age"; do
-      rclone copyto --s3-no-check-bucket --no-check-dest "$DIR/$f" "$DEST/$p/$f" ||
+      rclone copyto --s3-no-check-bucket --s3-no-head --no-check-dest "$DIR/$f" "$DEST/$p/$f" ||
         falhar 4 "envio de $p/$f falhou"
     done
   done
