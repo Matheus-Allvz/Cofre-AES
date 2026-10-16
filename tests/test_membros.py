@@ -391,8 +391,6 @@ def test_papel_vale_na_hora_para_sessao_aberta(cliente, owner, novo_cliente):
     assert _executar(cliente, "papel", a, papel="member").status_code == 200
     r = a["cliente"].post("/api/v1/convites", json=corpo, headers=H)
     assert (r.status_code, r.json()) == (403, {"erro": "sem_permissao"})
-    r = cliente.put(f"{M}/{a['id']}/papel", json={"papel": "owner"}, headers=H)
-    assert r.status_code == 422  # promoção a owner: Fase 7
 
 
 # ---------- Concorrência: dois owners se suspendendo ao mesmo tempo ----------

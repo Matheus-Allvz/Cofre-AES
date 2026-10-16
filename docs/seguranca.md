@@ -39,6 +39,24 @@ riscos residuais conhecidos e as decisões que os aceitam.
   tentativa, então apagar não muda nenhuma regra; e a tabela fica limitada ao que está dentro
   das janelas mesmo sob ataque sem nenhum login válido.
 
+- **Limite de corpo (Fase 7).** Antes de qualquer parse, um middleware ASGI confere o
+  `Content-Length` e conta os bytes do stream (inclusive `Transfer-Encoding: chunked`): 256 KiB
+  por padrão; 20 MiB só em `rotacionar`, promoção e reativação de owner, e só para sessão
+  **válida** (o hash do cookie é consultado em `sessoes` antes de ler o corpo; usuário `ativo`,
+  sem MFA pendente). Cookie inventado, revogado ou expirado fica nos 256 KiB. Corpo grande tem
+  prazo de leitura (`COFRE_PRAZO_CORPO_S`, padrão 60 s): estourou → `408 corpo_lento` e a vaga
+  é liberada, então um envio lento autenticado atrasa as outras rotações no máximo esse prazo,
+  e com sessão identificada. Acima → `413 {"erro":"corpo_grande"}`. Corpo acima de 256 KiB é um por vez (o
+  segundo recebe `503 ocupado` + `Retry-After: 5`), porque o parse JSON de 20 MiB ocupa várias
+  vezes isso em memória. Antes, três POSTs de 150 MB sem cookie (até no `/prelogin`) derrubavam
+  a API por OOM. Carga reproduzível: `scripts/carga_corpo.py` (6 POSTs de 150 MB em paralelo,
+  metade chunked, sem cookie → 6 × 413, `RestartCount` 0, pico 63 MiB).
+- **Memória de uma rotação grande (medida).** Rotação real de 18,9 MiB (158 itens com blobs de
+  ~63 KiB): pico de 79 MiB no container. Pior caso patológico, 18,9 MiB em 105 mil entradas
+  minúsculas: 219 MiB (o processo não devolve essa memória ao sistema). Somado às duas vagas do
+  Argon2 (2 × 64 MiB) fica abaixo do `mem_limit` de 384 MiB, com pouca folga: a rotação limita
+  `itens` a 20 000 e `versoes` a 100 000 por requisição e, na Fase 9, vale considerar 512 MiB.
+
 ## MFA (RF-I03, RF-I04)
 
 - TOTP RFC 6238 (SHA-1, 6 dígitos, 30 s, janela ±1) com `hmac` da stdlib; vetores do Apêndice B
@@ -48,7 +66,7 @@ riscos residuais conhecidos e as decisões que os aceitam.
   o segundo fator protege contra senha vazada, não contra comprometimento do servidor.
 - Os 10 códigos de recuperação (40 bits cada, `secrets`) ficam só como
   `HMAC-SHA256(pepper, código)`, aparecem uma vez e valem uma vez.
-- Política `mfa_obrigatorio` (padrão ligada): sessão de usuário sem MFA só alcança `/eu`,
+- Política `mfa_obrigatorio` (padrão **desligada** desde a Fase 7, por decisão do usuário; a org liga em `PUT /org/politica`): sessão de usuário sem MFA só alcança `/eu`,
   `/eu/mfa/*` e `/logout`. A condição é recalculada a cada requisição, então ligar a política
   vale na hora para sessões já abertas.
 
@@ -106,3 +124,27 @@ riscos residuais conhecidos e as decisões que os aceitam.
 - **Rollback para blob antigo legítimo não é detectado** (o AAD impede trocar de contexto, não
   voltar a uma versão anterior do mesmo contexto). Manifesto assinado fica no backlog.
 - **`sync` sem paginação**: dimensionado para alguns milhares de itens por usuário.
+
+## Compartilhamento, revogação e offboarding (Fase 7)
+
+- **Dados para a rotação.** `GET /colecoes/{id}/rotacao` (`gerenciar`) entrega membros, todos os
+  itens com `segredo_cif` (inclusive lixeira) e todas as versões numa resposta, com um evento
+  `colecao.rotacao_iniciada` (contagens). Quem rotaciona vê todos os segredos (precisa, para
+  recifrar); o evento registra isso de forma distinguível de uma revelação humana.
+- **Rotação atômica (RF-U04).** `POST /colecoes/{id}/rotacionar` numa transação: coleção
+  `FOR UPDATE`, itens `FOR UPDATE`, todas as validações (membros atuais, todos os itens inclusive
+  lixeira na versão atual, todas as versões) antes da primeira escrita. Duas rotações
+  simultâneas: uma 200, a outra 409 `chave_ver_desatualizada`. Edição durante a rotação: 409 e o
+  cliente refaz. Rotas de item travam a coleção antes do item (mesma ordem da rotação), senão as
+  duas se travariam em ordem inversa (deadlock, testado por mutação).
+- **O que a rotação resolve e o que não.** Ex-membro com a collectionKey antiga não decifra nada
+  gravado depois da rotação (testado no E2E do front com os módulos reais). O que ele viu antes
+  continua conhecido: por isso cada item fica `rotacao_senha_pendente` até alguém editar com
+  `senha_trocada=true` (troca no sistema de origem).
+- **Remoção (RF-U03).** `DELETE /membros/{id}` apaga os envelopes, marca as coleções e os itens e
+  devolve o relatório (ids); o evento `membro.removido` guarda só contagens.
+- **D13 (owners).** Promoção a owner e reativação de owner exigem envelopes `gerenciar` das
+  coleções (todas / as que faltam); coleção nova exige envelope de todo owner ativo; owner não
+  perde `gerenciar` nem sai de coleção (409 `owner_gerencia`). Testado depois de toda operação.
+- **Integridade do tipo.** O AAD de meta e segredo inclui o `tipo` do item: o servidor não troca
+  o tipo exibido sem quebrar a decifragem; o cliente ainda confere as chaves do JSON contra o tipo.

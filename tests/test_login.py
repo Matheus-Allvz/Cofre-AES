@@ -43,8 +43,11 @@ def test_login_ok_devolve_perfil_e_cookie_seguro(cliente, org):
     for campo in ("kdf", "sal", "chave_usuario_cif", "chave_privada_cif", "chave_publica"):
         assert corpo[campo] == dados[campo]
     # Política padrão: MFA obrigatório; o owner do bootstrap nasce sem MFA → sessão pendente.
-    assert corpo["politica"] == {"mfa_obrigatorio": True, "inatividade_min": 15}
-    assert (corpo["mfa_ativo"], corpo["mfa_pendente"]) == (False, True)
+    assert corpo["politica"] == {"mfa_obrigatorio": False, "inatividade_min": 15}
+    assert (corpo["mfa_ativo"], corpo["mfa_pendente"]) == (
+        False,
+        False,
+    )  # MFA opcional por padrão (Fase 7)
 
     # DoD 6: HttpOnly, Secure, SameSite=Strict, Path=/api.
     cookie = r.headers["set-cookie"]

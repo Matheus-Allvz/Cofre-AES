@@ -414,10 +414,19 @@ docker compose up -d --build && curl -fsSI http://127.0.0.1:8097/  # [FE-UP]
 **Requisitos:** RNF-02 (TLS/HSTS reais), RNF-05 (cron + cópia externa), RNF-14 (verificação no host), RNF-04 (monitor, se Uptime Kuma existir).
 **Repos:** BE + FE. **Dependências:** 8 e **todas** as ações humanas abaixo.
 
+**Decisões do usuário (registradas na Fase 7; valem sobre o texto abaixo)**
+- Domínio: `secrets.matheus-alves.dev` (substitui a proposta `cofre-empresa.matheus-alves.dev`), com o **proxy da Cloudflare** ligado (registro proxied, não "DNS only").
+- Cadeia real: Cloudflare → `<IP_DA_VPS>:443` (sslh) → Caddy `:4443` → `127.0.0.1:8097` (front) / `127.0.0.1:8098` (API). O Caddy vê todo cliente como `127.0.0.1`.
+- IP do cliente para rate limit e eventos: `CF-Connecting-IP`, aceito **só** quando a conexão vem do proxy local confiável (`127.0.0.1`); fora disso, ignorado. Tirar `--forwarded-allow-ips '*'`. Recomendado: **Authenticated Origin Pulls** no Caddy (só a Cloudflare fala com a origem). Teste: header forjado vindo de fora do proxy não muda o IP registrado.
+- Backup externo: **Cloudflare R2**, bucket `secrets-backup`, `rclone` com remoto `r2`, sempre com `--s3-no-check-bucket`. Prefixos `diario/` (retenção 8 d), `semanal/` (35 d), `mensal/` (100 d); a expiração é feita por **regras de ciclo de vida do R2** — o script **nunca apaga** no R2. Guarda de cota: antes do upload, `rclone size r2:secrets-backup` + tamanho do arquivo novo; se passar de **9 GB** (90% do plano grátis de 10 GB), o script falha (exit ≠ 0) sem enviar. Isso substitui o item 8 abaixo ("backup só local" deixa de ser opção).
+- MFA opcional por padrão (migração `0005`); a política da org continua podendo exigir.
+- No host ainda **não** há `rclone` nem `age` (instalar é ação humana) e `systemctl reload caddy` exige `sudo` do usuário (não entra no deploy automático).
+- Nada de IP real da VPS nem segredo no repositório (público): usar `<IP_DA_VPS>`; dados de infraestrutura ficam no `VPS_CONTEXTO.md` local.
+
 **Pré-requisitos humanos (bloqueantes, nesta ordem)**
 1. Restaurar acesso SSH à VPS <IP_DA_VPS> (hoje timeout): conferir firewall/allowlist do provedor, fail2ban, porta do sshd. Confirmar com `ssh deploy@<IP_DA_VPS> true`.
 2. Rodar os comandos read-only da §8 do `VPS_CONTEXTO.md` e anexar a saída ao PR (portas livres, RAM/disco, versão do Caddy, existência do Uptime Kuma).
-3. Escolher o domínio (proposta: `cofre-empresa.matheus-alves.dev`) e criar registro DNS **A** → `<IP_DA_VPS>`.
+3. Domínio `secrets.matheus-alves.dev` (decidido): registro DNS **A** → `<IP_DA_VPS>` com proxy da Cloudflare ligado.
 4. Confirmar portas livres **8097** (front) e **8098** (API) com `ss -tlnp` (trocar no compose se ocupadas).
 5. No host, como `deploy`: `git clone -b empresarial https://github.com/Matheus-Allvz/Cofre-AES.git /home/deploy/cofre-empresa-api` e `git clone -b empresarial https://github.com/Matheus-Allvz/Cofre-AES-Frontend.git /home/deploy/cofre-empresa-front`.
 6. Criar `/home/deploy/cofre-empresa-api/.env` (modo 600) com `POSTGRES_PASSWORD`, `APP_DB_PASSWORD`, `COFRE_SEGREDO` gerados com `openssl rand -base64 32`, `COOKIE_SECURE=true`, `BACKUP_AGE_RECIPIENT`. Guardar cópia dos segredos fora da VPS (perder `COFRE_SEGREDO` = ninguém loga).
@@ -425,7 +434,7 @@ docker compose up -d --build && curl -fsSI http://127.0.0.1:8097/  # [FE-UP]
 8. Decidir e configurar o destino externo do backup (`rclone config` para S3/Backblaze/outra máquina) ou aceitar explicitamente "backup só local" como pendência registrada.
 9. Adicionar no `/etc/caddy/Caddyfile` (sudo), validar e recarregar:
    ```
-   cofre-empresa.matheus-alves.dev {
+   secrets.matheus-alves.dev:4443 {
      encode gzip zstd
      handle /api/* { reverse_proxy 127.0.0.1:8098 }
      handle { reverse_proxy 127.0.0.1:8097 }

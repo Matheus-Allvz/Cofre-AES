@@ -94,9 +94,10 @@ Regex: `^x1\.[A-Za-z0-9_-]{43}\.[A-Za-z0-9_-]{16}\.[A-Za-z0-9_-]{22,}$`.
 | chave privada sob userKey | `cofre-emp/v1|privkey|<usuario_id>` |
 | envelope x1 de coleção | `cofre-emp/v1|env-colecao|<org_id>|<colecao_id>|<usuario_dest_id>|<chave_ver>` |
 | nome da coleção | `cofre-emp/v1|colecao-nome|<org_id>|<colecao_id>|<chave_ver>` |
-| meta do item | `cofre-emp/v1|item-meta|<org_id>|<colecao_id>|<item_id>|<chave_ver>|<versao>` |
-| segredo do item | `cofre-emp/v1|item-segredo|<org_id>|<colecao_id>|<item_id>|<chave_ver>|<versao>` |
+| meta do item | `cofre-emp/v1|item-meta|<org_id>|<colecao_id>|<item_id>|<tipo>|<chave_ver>|<versao>` |
+| segredo do item | `cofre-emp/v1|item-segredo|<org_id>|<colecao_id>|<item_id>|<tipo>|<chave_ver>|<versao>` |
 
+`tipo` (Fase 7) é o tipo do item (`login`/`nota`/`chave_api`, §3.4): o servidor não consegue trocar o tipo exibido sem quebrar a decifragem; além disso o cliente confere que as chaves do JSON decifrado pertencem ao tipo (§3.4) e trata divergência como "item adulterado". Sem migração de dados: não havia dados em produção quando o `tipo` entrou no AAD.
 `versao` no AAD é a versão que o item **terá** após a gravação (criação = 1; `PUT` com `If-Match: n` cifra com `n+1`). Rotação mantém `versao` e muda `chave_ver`. Restaurar versão antiga = cliente decifra a antiga e recifra como nova versão.
 
 ### 3.4 Conteúdo dos itens (antes de cifrar)
@@ -132,7 +133,7 @@ Extensões: `citext`. `*_cif` = envelope texto (`v1`/`x1`). Todas as tabelas de 
 | `sessoes` | `id uuid pk, usuario_id, token_hash bytea unique, criada_em, ultimo_uso, expira_em, ip, user_agent, mfa_pendente bool, revogada_em` — `mfa_pendente` **sem uso desde a Fase 4** (calculado por requisição: `politicas.mfa_obrigatorio AND totp_ultimo_passo IS NULL`); não confiar na coluna | 3 |
 | `recuperacoes` | `token_hash bytea pk, usuario_id, expira_em (5 min), usado_em` | 4 |
 | `codigos_mfa` | `usuario_id, codigo_hmac bytea, usado_em` (pk usuario_id+codigo_hmac) | 4 |
-| `politicas` | `org_id pk, mfa_obrigatorio bool default true, inatividade_min int check 5..60 default 15, atualizado_em` | 4 |
+| `politicas` | `org_id pk, mfa_obrigatorio bool default false (Fase 7, migração 0005: MFA opcional por padrão), inatividade_min int check 5..60 default 15, atualizado_em` | 4 |
 | `colecoes` | `id uuid pk, org_id, nome_cif, chave_ver int, rotacao_pendente bool, criada_por, criada_em` | 6 |
 | `colecao_membros` | `colecao_id, usuario_id, permissao check(ver_sem_revelar/ver/editar/gerenciar), chave_ver, chave_colecao_cif` — pk `(colecao_id, usuario_id)`; só o envelope da `chave_ver` atual | 6 |
 | `itens` | `id uuid pk (gerado no cliente), colecao_id, tipo check(login/nota/chave_api), versao int, chave_ver int, meta_cif, segredo_cif, rotacao_senha_pendente bool, criado_por, criado_em, atualizado_por, atualizado_em, excluido_em null` | 6 |
@@ -146,6 +147,7 @@ Sem RLS (só a API acessa o banco, que não publica porta). Defesa em profundida
 
 Base: `/api`. Dados em `/api/v1`. JSON. Erros: corpo `{"erro": "<codigo>"}` (handler único); 422 de validação do FastAPI mantém o formato padrão.
 Autenticação: cookie `sessao`. Em `POST/PUT/PATCH/DELETE` autenticados, header `X-Cofre: 1` obrigatório (403 `csrf` sem ele). Respostas da API com `Cache-Control: no-store`.
+Limite de corpo (Fase 7), conferido antes de qualquer parse no `Content-Length` e contando os bytes do stream (`Transfer-Encoding: chunked`): 256 KiB; 20 MiB só em `POST /colecoes/{id}/rotacionar`, `PUT /membros/{id}/papel` e `POST /membros/{id}/reativar` e só para **sessão válida** (consultada no banco antes de ler o corpo: não revogada, dentro dos prazos, usuário `ativo`, sem MFA pendente; qualquer outro cookie fica no limite pequeno), um corpo acima de 256 KiB por vez nessas rotas (o seguinte recebe 503 `ocupado` + `Retry-After`) e com prazo de leitura (`COFRE_PRAZO_CORPO_S`, padrão 60 s; estourou → 408 `corpo_lento` e a vaga é liberada). Acima → 413 `corpo_grande`.
 Sessão com `mfa_pendente=true` só acessa `/eu`, `/eu/mfa/*` e `/logout` (403 `mfa_configuracao_requerida` no resto).
 
 ### 5.1 Públicas (rate limit por IP; login/recuperação também por conta)
@@ -184,8 +186,8 @@ Sessão com `mfa_pendente=true` só acessa `/eu`, `/eu/mfa/*` e `/logout` (403 `
 | `POST /api/v1/convites` | owner, admin | `{email, papel: admin/member}` → 201 `{convite_id, usuario_id, link}` (token só nesta resposta); 409 `email_em_uso` |
 | `DELETE /api/v1/convites/{id}` | owner, admin | revoga; 409 se usado |
 | `POST /api/v1/membros/{id}/confirmar` | owner, admin | `{fingerprint}` → `aceito→ativo`; 422 `fingerprint_divergente` se ≠ calculado da chave guardada; 409 estado inválido |
-| `POST /api/v1/membros/{id}/suspender` / `reativar` | owner, admin | `ativo↔suspenso`; suspender revoga sessões; 409 `ultimo_owner`; 409 `auto_acao` (sobre si mesmo, vale também para papel e remoção) |
-| `PUT /api/v1/membros/{id}/papel` | owner (para/de owner); owner, admin (admin↔member) | promover a owner exige envelopes `gerenciar` de todas as coleções (`{papel:"owner", envelopes:[{colecao_id, chave_ver, chave_colecao_cif}]}`) — 422 `envelopes_incompletos`; 409 `ultimo_owner` |
+| `POST /api/v1/membros/{id}/suspender` / `reativar` | owner, admin | `ativo↔suspenso`; suspender revoga sessões; 409 `ultimo_owner`; 409 `auto_acao` (sobre si mesmo, vale também para papel e remoção). Reativar **owner** (Fase 7, D13): corpo `{envelopes:[{colecao_id, chave_ver, chave_colecao_cif}]}` com envelope `gerenciar` de toda coleção em que ele não tem `gerenciar` (as criadas enquanto estava suspenso) — 422 `envelopes_incompletos`; quem reativa owner é owner e tem as collectionKeys |
+| `PUT /api/v1/membros/{id}/papel` | owner (para/de owner); owner, admin (admin↔member) | promover a owner exige alvo `ativo` (409 `estado_invalido`) e envelopes `gerenciar` de todas as coleções (`{papel:"owner", envelopes:[{colecao_id, chave_ver, chave_colecao_cif}]}`) — 422 `envelopes_incompletos` (falta ou coleção desconhecida), 422 `envelopes_duplicados`, 409 `chave_ver_desatualizada`; envelopes fora da promoção → 422; 409 `ultimo_owner` |
 | `DELETE /api/v1/membros/{id}` | owner, admin | remove: revoga sessões, apaga envelopes, marca coleções `rotacao_pendente` e itens `rotacao_senha_pendente`, anonimiza nome/e-mail (`removido-<id>@invalido`), devolve `{relatorio:[{colecao_id, itens:[ids]}]}`; 409 `ultimo_owner` |
 
 ### 5.4 Coleções e itens
@@ -199,13 +201,14 @@ Permissões: `ver_sem_revelar` < `ver` < `editar` < `gerenciar`. Sem envelope = 
 | `PUT /api/v1/colecoes/{id}` | gerenciar | `{chave_ver, nome_cif}`; 409 `chave_ver_desatualizada` |
 | `DELETE /api/v1/colecoes/{id}` | gerenciar | só vazia (inclui lixeira); 409 `colecao_nao_vazia` |
 | `GET /api/v1/colecoes/{id}/membros` | gerenciar | `[{usuario_id, permissao, chave_ver}]` |
-| `POST /api/v1/colecoes/{id}/membros` | gerenciar | `{usuario_id, permissao, chave_ver, chave_colecao_cif}`; 409 `chave_ver_desatualizada`, 422 `destinatario_invalido`, 409 `ja_membro` |
-| `PUT /api/v1/colecoes/{id}/membros/{uid}` | gerenciar | `{permissao}`; owner não pode cair abaixo de `gerenciar` (409 `owner_gerencia`) |
-| `DELETE /api/v1/colecoes/{id}/membros/{uid}` | gerenciar | apaga envelope, `rotacao_pendente=true`, itens `rotacao_senha_pendente=true`; 409 `owner_gerencia`, 409 `ultimo_gerente` |
-| `POST /api/v1/colecoes/{id}/rotacionar` | gerenciar | `{chave_ver_atual, nome_cif, envelopes:[{usuario_id, chave_colecao_cif}], itens:[{id, versao, meta_cif, segredo_cif}], versoes:[{item_id, versao, meta_cif, segredo_cif}]}` → 200 `{chave_ver}`, `rotacao_pendente=false`. Atômico. 409 `chave_ver_desatualizada`; 422 `rotacao_incompleta` (falta membro atual, item — inclusive na lixeira — ou versão, ou sobra algum); 409 `conflito_versao` |
+| `POST /api/v1/colecoes/{id}/membros` | gerenciar | `{usuario_id, permissao, chave_ver, chave_colecao_cif}` → 201; 409 `chave_ver_desatualizada`, 422 `destinatario_invalido` (não ativo), 409 `ja_membro` |
+| `PUT /api/v1/colecoes/{id}/membros/{uid}` | gerenciar | `{permissao}` → 200; owner não pode cair abaixo de `gerenciar` (409 `owner_gerencia`); 409 `ultimo_gerente` |
+| `DELETE /api/v1/colecoes/{id}/membros/{uid}` | gerenciar | 204; apaga envelope, `rotacao_pendente=true`, itens `rotacao_senha_pendente=true`; 409 `owner_gerencia`, 409 `ultimo_gerente` |
+| `GET /api/v1/colecoes/{id}/rotacao` | gerenciar | `{chave_ver, membros:[{usuario_id}], itens:[{id, tipo, versao, chave_ver, meta_cif, segredo_cif, excluido_em}], versoes:[{item_id, versao, chave_ver, meta_cif, segredo_cif}]}` (inclui lixeira): o que o cliente precisa para rotacionar, auditado como **um** evento `colecao.rotacao_iniciada` (contagens) em vez de um `item.revelado` por item/versão. O tipo do evento é fixo no servidor (nenhum rótulo vem do cliente) |
+| `POST /api/v1/colecoes/{id}/rotacionar` | gerenciar | `{chave_ver_atual, nome_cif, envelopes:[{usuario_id, chave_colecao_cif}], itens:[{id, versao, meta_cif, segredo_cif}], versoes:[{item_id, versao, meta_cif, segredo_cif}]}` → 200 `{chave_ver}`, `rotacao_pendente=false`. Atômico. 409 `chave_ver_desatualizada`; 422 `rotacao_incompleta` (falta membro atual, item — inclusive na lixeira — ou versão, ou sobra/repete algum); 409 `conflito_versao` (conferido antes do conjunto de versões); 413 `corpo_grande` acima de 20 MiB; 503 `ocupado` se outro corpo grande está em processamento |
 | `POST /api/v1/colecoes/{id}/itens` | editar | `{id, tipo, chave_ver, meta_cif, segredo_cif}` → 201 `{versao:1}`; 409 `id_em_uso`, 409 `chave_ver_desatualizada` |
 | `PUT /api/v1/itens/{id}` | editar | header `If-Match: <versao>`; `{chave_ver, meta_cif, segredo_cif, senha_trocada: bool}` → 200 `{versao}`; versão anterior vai para `item_versoes`; `senha_trocada` limpa `rotacao_senha_pendente`. 428 sem If-Match, 409 `conflito_versao` |
-| `GET /api/v1/itens/{id}/segredo` | ver | evento `item.revelado` **na mesma transação**; `{segredo_cif, versao, chave_ver}`. 403 `sem_permissao` para `ver_sem_revelar` |
+| `GET /api/v1/itens/{id}/segredo` | ver | evento `item.revelado` **na mesma transação**; `{segredo_cif, versao, chave_ver}` (`chave_ver` do **item**). 403 `sem_permissao` para `ver_sem_revelar`; item na lixeira exige `editar` (vale também para `versoes/{v}`) |
 | `POST /api/v1/itens/{id}/copiado` | ver | 204, evento `item.copiado` (melhor esforço; documentado) |
 | `GET /api/v1/itens/{id}/versoes` | ver | `[{versao, chave_ver, editado_por, em}]` |
 | `GET /api/v1/itens/{id}/versoes/{v}` | ver | evento `item.versao_revelada`; `{meta_cif, segredo_cif, chave_ver}` |
@@ -221,7 +224,7 @@ Permissões: `ver_sem_revelar` < `ver` < `editar` < `gerenciar`. Sem envelope = 
 | `GET /api/v1/auditoria?de&ate&ator_id&tipo&alvo_id&antes_de_id&limite(≤200)` | owner, admin | eventos em ordem decrescente de id, paginação por cursor `antes_de_id` |
 
 ### 5.6 Tipos de evento (todos com `org_id, ator_id, ip, user_agent, alvo, resultado`)
-`auth.login` (ok/falha), `auth.logout`, `auth.bloqueio`, `auth.mfa` (ok/falha), `auth.senha_trocada`, `auth.recuperacao`, `auth.sessao_revogada`, `mfa.ativado`, `mfa.desativado`, `mfa.codigo_recuperacao_usado`, `convite.criado`, `convite.revogado`, `convite.aceito`, `membro.confirmado`, `membro.suspenso`, `membro.reativado`, `membro.removido`, `membro.papel_alterado`, `politica.alterada` (meta antes/depois), `colecao.criada`, `colecao.renomeada`, `colecao.excluida`, `colecao.membro_adicionado`, `colecao.permissao_alterada`, `colecao.membro_removido`, `colecao.rotacionada`, `item.criado`, `item.editado`, `item.revelado`, `item.versao_revelada`, `item.copiado`, `item.excluido`, `item.restaurado`, `item.purgado`, `org.criada`.
+`auth.login` (ok/falha), `auth.logout`, `auth.bloqueio`, `auth.mfa` (ok/falha), `auth.senha_trocada`, `auth.recuperacao`, `auth.sessao_revogada`, `mfa.ativado`, `mfa.desativado`, `mfa.codigo_recuperacao_usado`, `convite.criado`, `convite.revogado`, `convite.aceito`, `membro.confirmado`, `membro.suspenso`, `membro.reativado`, `membro.removido`, `membro.papel_alterado`, `politica.alterada` (meta antes/depois), `colecao.criada`, `colecao.renomeada`, `colecao.excluida`, `colecao.membro_adicionado`, `colecao.permissao_alterada`, `colecao.membro_removido`, `colecao.rotacao_iniciada`, `colecao.rotacionada`, `item.criado`, `item.editado`, `item.revelado`, `item.versao_revelada`, `item.copiado`, `item.excluido`, `item.restaurado`, `item.purgado`, `org.criada`.
 `meta` nunca contém envelope, authHash, token, código TOTP ou e-mail digitado em login falho (usa `sha256(email)[:8]`).
 
 ---
@@ -235,7 +238,13 @@ api ──rede interna do compose──> db (postgres:16-alpine, sem porta publi
 migrar (one-shot, mesma imagem da api, credencial de dono) roda antes da api
 ```
 
-- Backend `docker-compose.yml`: serviços `db`, `migrar`, `api`. `api` `depends_on: migrar: condition: service_completed_successfully`. `uvicorn --proxy-headers --forwarded-allow-ips '*'` (aceitável porque a porta só escuta em 127.0.0.1 e o Caddy sobrescreve `X-Forwarded-For` **[CONFIRMAR comportamento do Caddy]**).
+Produção (decisões do usuário, Fase 9): domínio `secrets.matheus-alves.dev` atrás do **proxy da Cloudflare**. Cadeia real: `Cliente ──HTTPS── Cloudflare ──> VPS <IP_DA_VPS>:443 (sslh) ──> Caddy :4443 ──> 127.0.0.1:8097/8098`. Como o sslh repassa a conexão localmente, **o Caddy vê todo cliente como 127.0.0.1** e o `X-Forwarded-For` que ele monta não identifica o cliente.
+
+- IP do cliente (rate limit por IP, eventos): vem de `CF-Connecting-IP` **só** quando a requisição chega do proxy local confiável (127.0.0.1); em qualquer outro caso o header é ignorado e vale o IP da conexão. A API não aceita mais `--forwarded-allow-ips '*'` em produção. Recomendado ativar **Authenticated Origin Pulls** (mTLS Cloudflare → origem) para que só a Cloudflare chegue ao Caddy, já que o IP público da VPS continua alcançável.
+- Backup externo: **Cloudflare R2**, bucket `secrets-backup`, via `rclone` com remoto `r2` (`--s3-no-check-bucket`, porque a credencial do bucket não lista/cria buckets). Prefixos `diario/` (8 dias), `semanal/` (35 dias) e `mensal/` (100 dias), expirados por **regras de ciclo de vida do R2**: o script **nunca apaga** nada no R2. Guarda de cota: o script calcula o uso projetado (uso atual do bucket + arquivo novo) e **falha** se passar de 9 GB (90% do plano grátis de 10 GB).
+- MFA opcional por padrão (configurável pela política da org).
+- Pré-requisitos no host ainda pendentes: `rclone` e `age` não estão instalados; o reload do Caddy exige `sudo` do usuário (não é feito pelo deploy automático).
+- Backend `docker-compose.yml`: serviços `db`, `migrar`, `api`. `api` `depends_on: migrar: condition: service_completed_successfully`. Hoje (até a Fase 9) `uvicorn --proxy-headers --forwarded-allow-ips '*'`, aceitável só porque a porta escuta em 127.0.0.1; a Fase 9 troca pela regra do `CF-Connecting-IP` acima.
 - Variáveis (`.env`, fora do git): `POSTGRES_PASSWORD` (dono), `APP_DB_PASSWORD`, `COFRE_SEGREDO`, `COOKIE_SECURE` (padrão `true`).
 - Front `nginx.conf` (versionado): estáticos + headers; `location /api/` faz proxy para `${API_UPSTREAM}` (padrão `http://host.docker.internal:8098`) **só para desenvolvimento local**; em produção o Caddy roteia `/api/*` antes.
 - Headers do front:

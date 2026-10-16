@@ -40,6 +40,7 @@ services:
       COFRE_SEGREDO: ${COFRE_SEGREDO:?defina COFRE_SEGREDO no .env}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       COFRE_ARGON2_CONCORRENCIA: ${COFRE_ARGON2_CONCORRENCIA:-2}
+      COFRE_PRAZO_CORPO_S: ${COFRE_PRAZO_CORPO_S:-60}
     ports:
       - "127.0.0.1:8098:8000"
     depends_on:

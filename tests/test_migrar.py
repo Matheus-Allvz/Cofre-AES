@@ -10,7 +10,13 @@ from app import migrar as runner
 def test_aplicada_e_idempotente(banco):
     with psycopg.connect(banco["dono"]) as conn:
         versoes = [v for (v,) in conn.execute("SELECT versao FROM schema_migracoes")]
-    assert versoes == ["0001_base", "0002_contas", "0003_mfa_politicas", "0004_colecoes_itens"]
+    assert versoes == [
+        "0001_base",
+        "0002_contas",
+        "0003_mfa_politicas",
+        "0004_colecoes_itens",
+        "0005_mfa_opcional",
+    ]
     assert runner.migrar(banco["dono"]) == []
 
 

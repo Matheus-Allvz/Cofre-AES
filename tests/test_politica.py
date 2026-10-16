@@ -84,4 +84,11 @@ def test_ociosa_maior_que_padrao(cliente, org, banco, relogio):
 
 
 def test_migration_cria_politica_padrao(banco, org):
-    assert ler(banco, "SELECT mfa_obrigatorio, inatividade_min FROM politicas") == [(True, 15)]
+    """Fase 7 (decisão do usuário): MFA opcional por padrão, na org da CLI e no DEFAULT."""
+    assert ler(banco, "SELECT mfa_obrigatorio, inatividade_min FROM politicas") == [(False, 15)]
+    padrao = ler(
+        banco,
+        """SELECT column_default FROM information_schema.columns
+           WHERE table_name = 'politicas' AND column_name = 'mfa_obrigatorio'""",
+    )
+    assert padrao == [("false",)]

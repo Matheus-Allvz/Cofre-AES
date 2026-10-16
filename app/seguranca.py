@@ -188,6 +188,27 @@ def sessao_atual(request: Request) -> Sessao:
 SessaoAtual = Annotated[Sessao, Depends(sessao_atual)]
 
 
+def sessao_valida(pool, token: str) -> bool:
+    """Para o limite de corpo (antes de ler o corpo): o token é de uma sessão viva (não revogada,
+    dentro da ociosa e da absoluta) de usuário ATIVO sem MFA pendente. Só consulta, não renova."""
+    agora = relogio.agora()
+    with db.transacao(pool) as conn:
+        return (
+            conn.execute(
+                """SELECT 1 FROM sessoes s
+                   JOIN usuarios u ON u.id = s.usuario_id
+                   JOIN politicas p ON p.org_id = u.org_id
+                   WHERE s.token_hash = %(hash)s AND s.revogada_em IS NULL
+                     AND s.expira_em > %(agora)s
+                     AND s.ultimo_uso > %(agora)s - make_interval(mins => p.inatividade_min)
+                     AND u.estado = 'ativo'
+                     AND NOT (p.mfa_obrigatorio AND u.totp_ultimo_passo IS NULL)""",
+                {"agora": agora, "hash": hash_token(token)},
+            ).fetchone()
+            is not None
+        )
+
+
 def exigir_papel(*papeis: str):
     def dependencia(sessao: SessaoAtual) -> Sessao:
         if sessao.estado != "ativo" or sessao.papel not in papeis:

@@ -22,7 +22,7 @@ class ErroCli(Exception):
 
 
 def criar_org(url: str, nome: str, email: str) -> dict:
-    """Uma org por instalação: org + política padrão + owner `convidado` + convite (72 h)."""
+    """Uma org por instalação: org + política (MFA opcional) + owner convidado + convite 72 h."""
     email = email.strip().lower()
     with psycopg.connect(url) as conn:  # uma transação: commit no fim, rollback em exceção
         conn.execute("SELECT pg_advisory_xact_lock(%s)", (TRAVA,))
@@ -31,7 +31,9 @@ def criar_org(url: str, nome: str, email: str) -> dict:
         (org_id,) = conn.execute(
             "INSERT INTO organizacoes (nome) VALUES (%s) RETURNING id", (nome,)
         ).fetchone()
-        conn.execute("INSERT INTO politicas (org_id) VALUES (%s)", (org_id,))
+        conn.execute(
+            "INSERT INTO politicas (org_id, mfa_obrigatorio) VALUES (%s, false)", (org_id,)
+        )
         auditoria.registrar(
             conn, org_id=org_id, tipo="org.criada", alvo_tipo="org", alvo_id=str(org_id)
         )
