@@ -494,6 +494,49 @@ def remover_membro(colecao_id: UUID, usuario_id: UUID, request: Request, sessao:
     return Response(status_code=204)
 
 
+@rota.get("/colecoes/{colecao_id}/rotacao")
+def dados_rotacao(colecao_id: UUID, request: Request, sessao: seguranca.Ativo):
+    """Tudo o que o cliente de quem gerencia precisa para rotacionar, numa resposta: membros
+    atuais, todos os itens (inclusive lixeira) com `segredo_cif` e todas as versões. Auditado
+    como UM evento `colecao.rotacao_iniciada` (contagens), em vez de um `item.revelado` por item
+    e versão; o tipo do evento é do servidor (nenhum rótulo vem do cliente)."""
+    with _transacao(request, sessao) as conn:
+        c = _colecao(conn, sessao, colecao_id, "gerenciar")
+        membros = _todos(
+            conn,
+            "SELECT usuario_id FROM colecao_membros WHERE colecao_id = %s ORDER BY usuario_id",
+            (colecao_id,),
+        )
+        itens = _todos(
+            conn,
+            """SELECT id, tipo, versao, chave_ver, meta_cif, segredo_cif, excluido_em
+               FROM itens WHERE colecao_id = %s ORDER BY id""",
+            (colecao_id,),
+        )
+        versoes = _todos(
+            conn,
+            """SELECT v.item_id, v.versao, v.chave_ver, v.meta_cif, v.segredo_cif
+               FROM item_versoes v JOIN itens i ON i.id = v.item_id
+               WHERE i.colecao_id = %s ORDER BY v.item_id, v.versao""",
+            (colecao_id,),
+        )
+        _evento(
+            conn,
+            request,
+            sessao,
+            "colecao.rotacao_iniciada",
+            "colecao",
+            colecao_id,
+            {
+                "chave_ver": c["chave_ver"],
+                "membros": len(membros),
+                "itens": len(itens),
+                "versoes": len(versoes),
+            },
+        )
+    return {"chave_ver": c["chave_ver"], "membros": membros, "itens": itens, "versoes": versoes}
+
+
 @rota.post("/colecoes/{colecao_id}/rotacionar")
 def rotacionar(colecao_id: UUID, dados: Rotacao, request: Request, sessao: seguranca.Ativo):
     """Troca atômica da collectionKey (§2, RF-U04). Uma transação: coleção FOR UPDATE, itens

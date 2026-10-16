@@ -150,6 +150,7 @@ def _rotas_fase7(ctx, banco):
             200,
         ),
         ("DELETE membros", lambda c: c.delete(f"{M}/{ctx['d']}", headers=H), 204),
+        ("GET rotacao", lambda c: c.get(f"{V}/colecoes/{col}/rotacao"), 200),
         ("POST rotacionar", lambda c: rotacionar(c, col, corpo_rotacao(banco, col)), 200),
     ]
 
@@ -181,6 +182,7 @@ def test_matriz_permissao_rotas_da_fase7(cliente, owner, novo_cliente, banco, pe
         "colecao.membro_adicionado",
         "colecao.permissao_alterada",
         "colecao.membro_removido",
+        "colecao.rotacao_iniciada",
         "colecao.rotacionada",
     ]
     for tipo in tipos:  # RF-A01: exatamente um evento por ação que passou
@@ -322,6 +324,54 @@ def rotacao(cliente, owner, novo_cliente, banco):
     _ok(editar(cliente, i1, 2))
     _ok(cliente.delete(f"{V}/itens/{i3}", headers=H), 204)
     return {"col": col, "a": a, "b": b, "itens": [i1, i2, i3], "lixo": i3}
+
+
+def test_dados_da_rotacao_numa_resposta_e_um_evento(cliente, banco, rotacao):
+    """Pós-validação: o cliente busca segredos e versões de uma vez, com UM evento auditado
+    (`colecao.rotacao_iniciada`, contagens), sem um `item.revelado` por item/versão."""
+    col = rotacao["col"]
+    r = _ok(cliente.get(f"{V}/colecoes/{col}/rotacao")).json()
+    assert r["chave_ver"] == 1
+    assert {m["usuario_id"] for m in r["membros"]} == {
+        str(u)
+        for (u,) in ler(
+            banco, "SELECT usuario_id FROM colecao_membros WHERE colecao_id = %s", (col,)
+        )
+    }
+    linhas = ler(
+        banco, "SELECT id::text, versao, segredo_cif FROM itens WHERE colecao_id = %s", (col,)
+    )
+    assert {(i["id"], i["versao"], i["segredo_cif"]) for i in r["itens"]} == set(linhas)
+    assert rotacao["lixo"] in {i["id"] for i in r["itens"] if i["excluido_em"]}  # lixeira junto
+    assert sorted((v["item_id"], v["versao"]) for v in r["versoes"]) == [
+        (rotacao["itens"][0], 1),
+        (rotacao["itens"][0], 2),
+    ]
+    (meta,) = ler(banco, "SELECT meta FROM eventos WHERE tipo = 'colecao.rotacao_iniciada'")[0]
+    assert meta == {"chave_ver": 1, "membros": 3, "itens": 3, "versoes": 2}
+    assert eventos(banco, "item.revelado") + eventos(banco, "item.versao_revelada") == 0
+    # Com esses dados o corpo da rotação fecha (mesmos conjuntos que o servidor confere).
+    corpo = {
+        "chave_ver_atual": r["chave_ver"],
+        "nome_cif": env_v1(),
+        "envelopes": [
+            {"usuario_id": m["usuario_id"], "chave_colecao_cif": x1()} for m in r["membros"]
+        ],
+        "itens": [
+            {"id": i["id"], "versao": i["versao"], "meta_cif": env_v1(), "segredo_cif": env_v1()}
+            for i in r["itens"]
+        ],
+        "versoes": [
+            {
+                "item_id": v["item_id"],
+                "versao": v["versao"],
+                "meta_cif": env_v1(),
+                "segredo_cif": env_v1(),
+            }
+            for v in r["versoes"]
+        ],
+    }
+    assert _ok(rotacionar(cliente, col, corpo)).json() == {"chave_ver": 2}
 
 
 def test_rotacionar_erros_nao_mudam_nada(cliente, banco, rotacao):
